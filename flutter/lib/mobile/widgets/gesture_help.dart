@@ -77,6 +77,7 @@ class _GestureHelpState extends State<GestureHelp> {
   Widget build(BuildContext context) {
     final size = MediaQuery.of(context).size;
     final space = 12.0;
+    final compact = size.width < 360;
     var width = size.width - 2 * space;
     final minWidth = 90;
     if (size.width > minWidth + 2 * space) {
@@ -101,9 +102,9 @@ class _GestureHelpState extends State<GestureHelp> {
                         activeBgColor: [MyTheme.accent],
                         inactiveBgColor: Theme.of(context).hintColor,
                         totalSwitches: 2,
-                        minWidth: 150,
-                        fontSize: 15,
-                        iconSize: 18,
+                        minWidth: compact ? 126 : 150,
+                        fontSize: compact ? 13 : 15,
+                        iconSize: compact ? 16 : 18,
                         labels: [
                           translate("Mouse mode"),
                           translate("Touch mode")
@@ -153,9 +154,9 @@ class _GestureHelpState extends State<GestureHelp> {
                       if (_touchMode && _virtualMouseMode.showVirtualMouse)
                         Padding(
                           // Indent "Virtual mouse size"
-                          padding: const EdgeInsets.only(left: 24.0),
+                          padding: EdgeInsets.only(left: compact ? 8 : 24),
                           child: SizedBox(
-                            width: 260,
+                            width: compact ? size.width - 32 : 260,
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               mainAxisSize: MainAxisSize.min,

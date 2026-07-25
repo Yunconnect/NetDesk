@@ -13,6 +13,7 @@ import '../../models/peer_model.dart';
 import '../../models/platform_model.dart';
 import '../../desktop/widgets/material_mod_popup_menu.dart' as mod_menu;
 import '../../desktop/widgets/popup_menu.dart';
+import 'responsive_layout.dart';
 
 typedef PopupMenuEntryBuilder = Future<List<mod_menu.PopupMenuEntry<String>>>
     Function(BuildContext);
@@ -110,10 +111,12 @@ class _PeerCardState extends State<_PeerCard>
   @override
   Widget build(BuildContext context) {
     super.build(context);
-    return Obx(
-      () =>
-          stateGlobal.isPortrait.isTrue ? _buildPortrait() : _buildLandscape(),
-    );
+    return Obx(() => shouldUseCompactPeerLayout(
+            isMobilePlatform: isMobile,
+            isWebMobile: isWeb && !isWebDesktop,
+            isPortrait: stateGlobal.isPortrait.isTrue)
+        ? _buildPortrait()
+        : _buildLandscape());
   }
 
   Widget gestureDetector({required Widget child}) {

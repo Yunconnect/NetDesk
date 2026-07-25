@@ -144,10 +144,12 @@ class _ConnectionPageState extends State<ConnectionPage> {
   /// UI for the remote endpoint field.
   /// Search for a peer and connect to it if the id exists.
   Widget _buildRemoteIDTextField() {
-    final w = SizedBox(
-      height: 84,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 2),
+    final availableWidth = MediaQuery.sizeOf(context).width;
+    final compact = availableWidth < 360;
+    final w = Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 2),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 72),
         child: Ink(
           decoration: BoxDecoration(
             color: Theme.of(context).cardColor,
@@ -157,7 +159,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
             children: <Widget>[
               Expanded(
                 child: Container(
-                  padding: const EdgeInsets.only(left: 16, right: 16),
+                  padding: EdgeInsets.symmetric(horizontal: compact ? 10 : 16),
                   child: RawAutocomplete<Peer>(
                     optionsBuilder: (TextEditingValue textEditingValue) {
                       if (textEditingValue.text == '') {
@@ -292,7 +294,8 @@ class _ConnectionPageState extends State<ConnectionPage> {
                               child: ConstrainedBox(
                                 constraints: BoxConstraints(
                                   maxHeight: maxHeight,
-                                  maxWidth: 320,
+                                  maxWidth:
+                                      (availableWidth - 24).clamp(200, 320),
                                 ),
                                 child: _allPeersLoader.peers.isEmpty &&
                                         !_allPeersLoader.isPeersLoaded
@@ -339,13 +342,13 @@ class _ConnectionPageState extends State<ConnectionPage> {
                 ),
               ),
               SizedBox(
-                width: 60,
-                height: 60,
+                width: compact ? 48 : 60,
+                height: compact ? 48 : 60,
                 child: IconButton(
-                  icon: const Icon(
+                  icon: Icon(
                     Icons.arrow_forward,
                     color: MyTheme.darkGray,
-                    size: 45,
+                    size: compact ? 34 : 45,
                   ),
                   onPressed: onConnect,
                 ),
@@ -383,31 +386,41 @@ class _ConnectionPageState extends State<ConnectionPage> {
           ),
           onSubmitted: (_) => onConnect(),
         ).marginSymmetric(horizontal: 4, vertical: 4),
-        Wrap(
-          alignment: WrapAlignment.center,
-          spacing: 8,
-          children: [
-            TextButton.icon(
-              onPressed: () => onConnect(),
-              icon: const Icon(Icons.desktop_windows_outlined),
-              label: Text(translate('Connect')),
-            ),
-            TextButton.icon(
-              onPressed: () => onConnect(isFileTransfer: true),
-              icon: const Icon(Icons.folder_outlined),
-              label: Text(translate('Transfer file')),
-            ),
-            TextButton.icon(
-              onPressed: () => onConnect(isViewCamera: true),
-              icon: const Icon(Icons.videocam_outlined),
-              label: Text(translate('View camera')),
-            ),
-            TextButton.icon(
-              onPressed: () => onConnect(isTerminal: true),
-              icon: const Icon(Icons.terminal_outlined),
-              label: Text(translate('Terminal')),
-            ),
-          ],
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final singleColumn = constraints.maxWidth < 340;
+            final buttonWidth = singleColumn
+                ? constraints.maxWidth
+                : (constraints.maxWidth - 8) / 2;
+            Widget action(
+                IconData icon, String label, VoidCallback onPressed) {
+              return SizedBox(
+                width: buttonWidth,
+                child: TextButton.icon(
+                  onPressed: onPressed,
+                  icon: Icon(icon),
+                  label: Text(translate(label),
+                      maxLines: 2, overflow: TextOverflow.ellipsis),
+                ),
+              );
+            }
+
+            return Wrap(
+              alignment: WrapAlignment.center,
+              spacing: 8,
+              runSpacing: 4,
+              children: [
+                action(Icons.desktop_windows_outlined, 'Connect',
+                    () => onConnect()),
+                action(Icons.folder_outlined, 'Transfer file',
+                    () => onConnect(isFileTransfer: true)),
+                action(Icons.videocam_outlined, 'View camera',
+                    () => onConnect(isViewCamera: true)),
+                action(Icons.terminal_outlined, 'Terminal',
+                    () => onConnect(isTerminal: true)),
+              ],
+            );
+          },
         ),
       ],
     );

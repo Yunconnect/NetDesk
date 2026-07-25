@@ -2,13 +2,11 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_home_page.dart';
-import 'package:flutter_hbb/mobile/widgets/dialog.dart';
 import 'package:flutter_hbb/models/chat_model.dart';
 import 'package:get/get.dart';
 import 'package:provider/provider.dart';
 
 import '../../common.dart';
-import '../../common/widgets/dialog.dart';
 import '../../consts.dart';
 import '../../models/platform_model.dart';
 import '../../models/server_model.dart';
@@ -211,21 +209,25 @@ class ScamWarningDialogState extends State<ScamWarningDialog> {
                         });
                       },
                     ),
-                    Text(
-                      translate("Don't show again"),
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 15.0,
+                    Expanded(
+                      child: Text(
+                        translate("Don't show again"),
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 15.0,
+                        ),
                       ),
                     ),
                   ],
                 ),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
+                Wrap(
+                  alignment: WrapAlignment.end,
+                  spacing: 10,
+                  runSpacing: 8,
                   children: [
-                    Container(
-                      constraints: BoxConstraints(maxWidth: 150),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 180),
                       child: ElevatedButton(
                         onPressed: isButtonLocked
                             ? null
@@ -255,9 +257,8 @@ class ScamWarningDialogState extends State<ScamWarningDialog> {
                         ),
                       ),
                     ),
-                    SizedBox(width: 15),
-                    Container(
-                      constraints: BoxConstraints(maxWidth: 150),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 180),
                       child: ElevatedButton(
                         onPressed: () {
                           Navigator.of(context).pop();
@@ -481,9 +482,11 @@ class ConnectionManager extends StatelessWidget {
         child: disconnectButton,
       );
     } else {
-      return Row(
+      return Wrap(
         children: buttons,
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        alignment: WrapAlignment.spaceBetween,
+        spacing: 8,
+        runSpacing: 8,
       );
     }
   }
@@ -498,15 +501,17 @@ class ConnectionManager extends StatelessWidget {
         translate("android_new_voice_call_tip"),
         style: Theme.of(context).textTheme.bodyMedium,
       ).marginOnly(bottom: 5),
-      Row(
-        mainAxisAlignment: MainAxisAlignment.end,
+      Wrap(
+        alignment: WrapAlignment.end,
+        spacing: 8,
+        runSpacing: 8,
         children: [
           TextButton(
             child: Text(translate("Dismiss")),
             onPressed: () {
               serverModel.handleVoiceCall(client, false);
             },
-          ).marginOnly(right: 15),
+          ),
           ElevatedButton.icon(
             icon: const Icon(Icons.check),
             label: Text(translate("Accept")),

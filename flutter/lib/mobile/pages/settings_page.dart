@@ -1,10 +1,10 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_hbb/common/widgets/dialog.dart';
+import 'package:flutter_hbb/common/widgets/setting_widgets.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_home_page.dart';
-import 'package:flutter_hbb/desktop/pages/desktop_setting_page.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
+import 'package:get/get.dart';
 import 'package:provider/provider.dart';
 import 'package:settings_ui/settings_ui.dart';
 
@@ -172,14 +172,202 @@ class _SettingsState extends State<SettingsPage> {
             onPressed: (context) => Navigator.push(
               context,
               MaterialPageRoute(
-                builder: (context) => DesktopSettingPage(
-                  initialTabkey: SettingsTabKey.display,
-                ),
+                builder: (context) => const MobileDisplaySettingsPage(),
               ),
             ),
           ),
         ],
       );
+}
+
+class MobileDisplaySettingsPage extends StatefulWidget {
+  const MobileDisplaySettingsPage({super.key});
+
+  @override
+  State<MobileDisplaySettingsPage> createState() =>
+      _MobileDisplaySettingsPageState();
+}
+
+class _MobileDisplaySettingsPageState
+    extends State<MobileDisplaySettingsPage> {
+  @override
+  Widget build(BuildContext context) {
+    final Map codecsJson = jsonDecode(bind.mainSupportedHwdecodings());
+    final h264 = codecsJson['h264'] ?? false;
+    final h265 = codecsJson['h265'] ?? false;
+    final codecList = [
+      _RadioEntry('Auto', 'auto'),
+      _RadioEntry('VP8', 'vp8'),
+      _RadioEntry('VP9', 'vp9'),
+      _RadioEntry('AV1', 'av1'),
+      if (h264) _RadioEntry('H264', 'h264'),
+      if (h265) _RadioEntry('H265', 'h265'),
+    ];
+    final showCustomImageQuality = false.obs;
+
+    return Scaffold(
+      appBar: AppBar(
+        leading: IconButton(
+          onPressed: () => Navigator.pop(context),
+          icon: const Icon(Icons.arrow_back_ios),
+        ),
+        title: Text(translate('Display Settings'),
+            maxLines: 1, overflow: TextOverflow.ellipsis),
+        centerTitle: true,
+      ),
+      body: SettingsList(sections: [
+        SettingsSection(tiles: [
+          _getPopupDialogRadioEntry(
+            title: 'Default View Style',
+            list: [
+              _RadioEntry('Scale original', kRemoteViewStyleOriginal),
+              _RadioEntry('Scale adaptive', kRemoteViewStyleAdaptive),
+            ],
+            getter: () =>
+                bind.mainGetUserDefaultOption(key: kOptionViewStyle),
+            asyncSetter: isOptionFixed(kOptionViewStyle)
+                ? null
+                : (value) => bind.mainSetUserDefaultOption(
+                    key: kOptionViewStyle, value: value),
+          ),
+          _getPopupDialogRadioEntry(
+            title: 'Default Image Quality',
+            list: [
+              _RadioEntry('Good image quality', kRemoteImageQualityBest),
+              _RadioEntry('Balanced', kRemoteImageQualityBalanced),
+              _RadioEntry('Optimize reaction time', kRemoteImageQualityLow),
+              _RadioEntry('Custom', kRemoteImageQualityCustom),
+            ],
+            getter: () {
+              final value =
+                  bind.mainGetUserDefaultOption(key: kOptionImageQuality);
+              showCustomImageQuality.value =
+                  value == kRemoteImageQualityCustom;
+              return value;
+            },
+            asyncSetter: isOptionFixed(kOptionImageQuality)
+                ? null
+                : (value) async {
+                    await bind.mainSetUserDefaultOption(
+                        key: kOptionImageQuality, value: value);
+                    showCustomImageQuality.value =
+                        value == kRemoteImageQualityCustom;
+                  },
+            tail: customImageQualitySetting(),
+            showTail: showCustomImageQuality,
+            notCloseValue: kRemoteImageQualityCustom,
+          ),
+          _getPopupDialogRadioEntry(
+            title: 'Default Codec',
+            list: codecList,
+            getter: () =>
+                bind.mainGetUserDefaultOption(key: kOptionCodecPreference),
+            asyncSetter: isOptionFixed(kOptionCodecPreference)
+                ? null
+                : (value) => bind.mainSetUserDefaultOption(
+                    key: kOptionCodecPreference, value: value),
+          ),
+        ]),
+        SettingsSection(
+          title: Text(translate('Other Default Options')),
+          tiles: otherDefaultSettings()
+              .map((entry) => _buildBooleanSetting(entry.$1, entry.$2))
+              .toList(),
+        ),
+      ]),
+    );
+  }
+
+  SettingsTile _buildBooleanSetting(String label, String key) {
+    final value = bind.mainGetUserDefaultOption(key: key) == 'Y';
+    return SettingsTile.switchTile(
+      initialValue: value,
+      title: Text(translate(label)),
+      onToggle: isOptionFixed(key)
+          ? null
+          : (enabled) async {
+              await bind.mainSetUserDefaultOption(
+                  key: key, value: enabled ? 'Y' : defaultOptionNo);
+              if (mounted) setState(() {});
+            },
+    );
+  }
+}
+
+class _RadioEntry {
+  const _RadioEntry(this.label, this.value);
+
+  final String label;
+  final String value;
+}
+
+typedef _RadioEntryGetter = String Function();
+typedef _RadioEntrySetter = Future<void> Function(String);
+
+SettingsTile _getPopupDialogRadioEntry({
+  required String title,
+  required List<_RadioEntry> list,
+  required _RadioEntryGetter getter,
+  required _RadioEntrySetter? asyncSetter,
+  Widget? tail,
+  RxBool? showTail,
+  String? notCloseValue,
+}) {
+  final groupValue = getter().obs;
+  final valueText =
+      (list.firstWhereOrNull((entry) => entry.value == groupValue.value)?.label ??
+              groupValue.value)
+          .obs;
+
+  void refreshValue() {
+    groupValue.value = getter();
+    valueText.value = list
+            .firstWhereOrNull((entry) => entry.value == groupValue.value)
+            ?.label ??
+        groupValue.value;
+  }
+
+  void showSelectionDialog() {
+    gFFI.dialogManager.show(
+      (setState, close, context) => CustomAlertDialog(
+        content: Obx(() => Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ...list.map((entry) => getRadio<String>(
+                      Text(translate(entry.label)),
+                      entry.value,
+                      groupValue.value,
+                      asyncSetter == null
+                          ? null
+                          : (value) async {
+                              if (value == null) return;
+                              await asyncSetter(value);
+                              refreshValue();
+                              if (value != notCloseValue) close();
+                            },
+                    )),
+                if (tail != null && showTail != null)
+                  Obx(() => Offstage(
+                        offstage: !showTail.value,
+                        child: tail,
+                      )),
+              ],
+            )),
+      ),
+      backDismiss: true,
+      clickMaskDismiss: true,
+    );
+  }
+
+  return SettingsTile(
+    title: Text(translate(title)),
+    onPressed: asyncSetter == null ? null : (_) => showSelectionDialog(),
+    value: Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Obx(() => Text(translate(valueText.value),
+          maxLines: 2, overflow: TextOverflow.ellipsis)),
+    ),
+  );
 }
 
 void showLanguageSettings(OverlayDialogManager dialogManager) async {

@@ -133,9 +133,16 @@ class HomePageState extends State<HomePage> {
           Expanded(
             child: Center(
               child: Row(
+                mainAxisSize: MainAxisSize.min,
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Text("${currentUser.firstName}   ${currentUser.id}"),
+                  Flexible(
+                    child: Text(
+                      "${currentUser.firstName}   ${currentUser.id}",
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
                   if (connected)
                     Container(
                       width: 10,
@@ -152,7 +159,11 @@ class HomePageState extends State<HomePage> {
         ],
       );
     }
-    return Text(bind.mainGetAppNameSync());
+    return Text(
+      bind.mainGetAppNameSync(),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+    );
   }
 }
 

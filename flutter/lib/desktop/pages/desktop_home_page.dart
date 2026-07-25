@@ -626,7 +626,7 @@ class _LanServerInfoPanelState extends State<LanServerInfoPanel> {
       builder: (context) => AlertDialog(
         title: Text(translate('Local Address')),
         content: SizedBox(
-          width: 420,
+          width: isDesktop || isWebDesktop ? 420 : double.maxFinite,
           height: 300,
           child: ListView.separated(
             itemCount: addresses.length,
@@ -705,6 +705,7 @@ Future<void> showLanSettingsDialog(
     context: context,
     builder: (dialogContext) => StatefulBuilder(
       builder: (context, setDialogState) {
+        final useDesktopLayout = isDesktop || isWebDesktop;
         final isDark = Theme.of(context).brightness == Brightness.dark;
         final primary = Theme.of(context).colorScheme.primary;
         final muted = isDark ? Colors.white60 : const Color(0xFF737B8C);
@@ -745,15 +746,59 @@ Future<void> showLanSettingsDialog(
           );
         }
 
+        Widget responsiveFields(List<Widget> children) {
+          if (useDesktopLayout) {
+            return Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: children,
+            );
+          }
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              for (var index = 0; index < children.length; index++) ...[
+                children[index] is Expanded
+                    ? (children[index] as Expanded).child
+                    : children[index],
+                if (index != children.length - 1) const SizedBox(height: 12),
+              ],
+            ],
+          );
+        }
+
+        Widget responsiveActions(List<Widget> children) {
+          if (useDesktopLayout) {
+            return Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: children,
+            );
+          }
+          return Wrap(
+            alignment: WrapAlignment.end,
+            spacing: 10,
+            runSpacing: 8,
+            children: children,
+          );
+        }
+
         return Dialog(
+          insetPadding: EdgeInsets.symmetric(
+            horizontal: useDesktopLayout ? 40 : 16,
+            vertical: 24,
+          ),
           backgroundColor: isDark ? const Color(0xFF202228) : Colors.white,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(18),
           ),
           child: SizedBox(
-            width: 590,
+            width: useDesktopLayout ? 590 : double.maxFinite,
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(24, 22, 24, 20),
+              padding: EdgeInsets.fromLTRB(
+                useDesktopLayout ? 24 : 16,
+                useDesktopLayout ? 22 : 16,
+                useDesktopLayout ? 24 : 16,
+                useDesktopLayout ? 20 : 16,
+              ),
               child: SingleChildScrollView(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -802,9 +847,7 @@ Future<void> showLanSettingsDialog(
                       ],
                     ),
                     const SizedBox(height: 22),
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
+                    responsiveFields([
                         Expanded(
                           child: TextField(
                             controller: username,
@@ -815,7 +858,7 @@ Future<void> showLanSettingsDialog(
                             ),
                           ),
                         ),
-                        const SizedBox(width: 12),
+                        if (useDesktopLayout) const SizedBox(width: 12),
                         Expanded(
                           child: TextField(
                             controller: password,
@@ -832,12 +875,9 @@ Future<void> showLanSettingsDialog(
                             ),
                           ),
                         ),
-                      ],
-                    ),
+                      ]),
                     const SizedBox(height: 14),
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
+                    responsiveFields([
                         Expanded(
                           child: TextField(
                             controller: listenAddresses,
@@ -850,9 +890,9 @@ Future<void> showLanSettingsDialog(
                             ),
                           ),
                         ),
-                        const SizedBox(width: 12),
+                        if (useDesktopLayout) const SizedBox(width: 12),
                         SizedBox(
-                          width: 140,
+                          width: useDesktopLayout ? 140 : double.maxFinite,
                           child: TextField(
                             controller: listenPort,
                             keyboardType: TextInputType.number,
@@ -862,8 +902,7 @@ Future<void> showLanSettingsDialog(
                             ),
                           ),
                         ),
-                      ],
-                    ),
+                      ]),
                     const SizedBox(height: 14),
                     TextField(
                       controller: allowedNetworks,
@@ -1025,14 +1064,12 @@ Future<void> showLanSettingsDialog(
                     const SizedBox(height: 20),
                     Divider(height: 1, color: border),
                     const SizedBox(height: 16),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: [
+                    responsiveActions([
                         TextButton(
                           onPressed: () => Navigator.of(dialogContext).pop(),
                           child: Text(translate('Cancel')),
                         ),
-                        const SizedBox(width: 10),
+                        if (useDesktopLayout) const SizedBox(width: 10),
                         ElevatedButton.icon(
                           onPressed: saving
                               ? null
