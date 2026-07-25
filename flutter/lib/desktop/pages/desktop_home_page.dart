@@ -18,6 +18,7 @@ import 'package:flutter_hbb/utils/multi_window_manager.dart';
 import 'package:flutter_hbb/utils/platform_channel.dart';
 import 'package:get/get.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:window_size/window_size.dart' as window_size;
 import '../widgets/button.dart';
@@ -30,6 +31,13 @@ class DesktopHomePage extends StatefulWidget {
 }
 
 const borderColor = Color(0xFF2F65BA);
+const _showSelinuxHelpTipOption = 'show-selinux-help-tip';
+const _selinuxHelpUrl =
+    'https://github.com/zibo-chen/SubnetDesk/blob/master/docs/linux-host-readiness.md#selinux';
+const _waylandHelpUrl =
+    'https://github.com/zibo-chen/SubnetDesk/blob/master/docs/linux-host-readiness.md#wayland-session';
+const _loginWaylandHelpUrl =
+    'https://github.com/zibo-chen/SubnetDesk/blob/master/docs/linux-host-readiness.md#wayland-login-screen';
 const _lanDeviceNameOption = 'lan-device-name';
 
 class LanServerInfoPanel extends StatefulWidget {
@@ -1368,6 +1376,8 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         canMonitorInput: !isMac || bind.mainIsCanInputMonitoring(prompt: false),
         daemonInstalled: !isMac || bind.mainIsInstalledDaemon(prompt: false),
         selinuxEnforcing: isLinuxPlatform && bind.isSelinuxEnforcing(),
+        showSelinuxWarning: !isLinuxPlatform ||
+            bind.mainGetLocalOption(key: _showSelinuxHelpTipOption) != 'N',
         currentSessionWayland: isLinuxPlatform && bind.mainCurrentIsWayland(),
         loginSessionWayland: isLinuxPlatform && bind.mainIsLoginWayland(),
       ),
@@ -1444,11 +1454,11 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       case SetupReadinessIssue.accessibility:
       case SetupReadinessIssue.inputMonitoring:
       case SetupReadinessIssue.daemon:
-        return true;
-      case SetupReadinessIssue.systemError:
       case SetupReadinessIssue.selinux:
       case SetupReadinessIssue.wayland:
       case SetupReadinessIssue.loginWayland:
+        return true;
+      case SetupReadinessIssue.systemError:
         return false;
     }
   }
@@ -1462,12 +1472,40 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       case SetupReadinessIssue.accessibility:
       case SetupReadinessIssue.inputMonitoring:
         return translate('Configure');
-      case SetupReadinessIssue.systemError:
       case SetupReadinessIssue.selinux:
       case SetupReadinessIssue.wayland:
       case SetupReadinessIssue.loginWayland:
+        return translate('Help');
+      case SetupReadinessIssue.systemError:
         return '';
     }
+  }
+
+  String? _setupIssueHelpUrl(SetupReadinessIssue issue) {
+    switch (issue) {
+      case SetupReadinessIssue.selinux:
+        return _selinuxHelpUrl;
+      case SetupReadinessIssue.wayland:
+        return _waylandHelpUrl;
+      case SetupReadinessIssue.loginWayland:
+        return _loginWaylandHelpUrl;
+      case SetupReadinessIssue.systemError:
+      case SetupReadinessIssue.applicationInstall:
+      case SetupReadinessIssue.screenRecording:
+      case SetupReadinessIssue.accessibility:
+      case SetupReadinessIssue.inputMonitoring:
+      case SetupReadinessIssue.daemon:
+        return null;
+    }
+  }
+
+  Future<void> _dismissSetupIssue(SetupReadinessIssue issue) async {
+    if (issue != SetupReadinessIssue.selinux) return;
+    await bind.mainSetLocalOption(
+      key: _showSelinuxHelpTipOption,
+      value: 'N',
+    );
+    if (mounted) setState(() {});
   }
 
   Future<void> _performSetupIssueAction(SetupReadinessIssue issue) async {
@@ -1492,10 +1530,15 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         bind.mainIsInstalledDaemon(prompt: true);
         watchIsInstalledDaemon = true;
         break;
-      case SetupReadinessIssue.systemError:
       case SetupReadinessIssue.selinux:
       case SetupReadinessIssue.wayland:
       case SetupReadinessIssue.loginWayland:
+        final helpUrl = _setupIssueHelpUrl(issue);
+        if (helpUrl != null) {
+          await launchUrl(Uri.parse(helpUrl));
+        }
+        break;
+      case SetupReadinessIssue.systemError:
         break;
     }
     if (mounted) setState(() {});
@@ -1762,6 +1805,15 @@ class _DesktopHomePageState extends State<DesktopHomePage>
               child: Text(_setupIssueActionLabel(issue)),
             ),
           ],
+          if (issue == SetupReadinessIssue.selinux)
+            IconButton(
+              tooltip: translate('Close'),
+              onPressed: () async {
+                Navigator.of(dialogContext).pop();
+                await _dismissSetupIssue(issue);
+              },
+              icon: const Icon(Icons.close_rounded, size: 18),
+            ),
         ],
       ),
     );
@@ -2052,8 +2104,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       final LinuxCards = <Widget>[];
       if (bind.isSelinuxEnforcing()) {
         // Check is SELinux enforcing, but show user a tip of is SELinux enabled for simple.
-        final keyShowSelinuxHelpTip = "show-selinux-help-tip";
-        if (bind.mainGetLocalOption(key: keyShowSelinuxHelpTip) != 'N') {
+        if (bind.mainGetLocalOption(key: _showSelinuxHelpTipOption) != 'N') {
           LinuxCards.add(
             buildInstallCard(
               "Warning",
@@ -2061,8 +2112,10 @@ class _DesktopHomePageState extends State<DesktopHomePage>
               "",
               () async {},
               marginTop: LinuxCards.isEmpty ? 20.0 : 5.0,
+              help: 'Help',
+              link: _selinuxHelpUrl,
               closeButton: true,
-              closeOption: keyShowSelinuxHelpTip,
+              closeOption: _showSelinuxHelpTipOption,
             ),
           );
         }
@@ -2075,6 +2128,8 @@ class _DesktopHomePageState extends State<DesktopHomePage>
             "",
             () async {},
             marginTop: LinuxCards.isEmpty ? 20.0 : 5.0,
+            help: 'Help',
+            link: _waylandHelpUrl,
           ),
         );
       } else if (bind.mainIsLoginWayland()) {
@@ -2085,6 +2140,8 @@ class _DesktopHomePageState extends State<DesktopHomePage>
             "",
             () async {},
             marginTop: LinuxCards.isEmpty ? 20.0 : 5.0,
+            help: 'Help',
+            link: _loginWaylandHelpUrl,
           ),
         );
       }
@@ -2116,6 +2173,8 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     String btnText,
     GestureTapCallback onPressed, {
     double marginTop = 20.0,
+    String? help,
+    String? link,
     bool? closeButton,
     String? closeOption,
   }) {
@@ -2208,7 +2267,24 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                           ),
                         ]
                       : <Widget>[]) +
-                  <Widget>[],
+                  (help != null && link != null
+                      ? <Widget>[
+                          Center(
+                            child: InkWell(
+                              onTap: () async =>
+                                  await launchUrl(Uri.parse(link)),
+                              child: Text(
+                                translate(help),
+                                style: const TextStyle(
+                                  decoration: TextDecoration.underline,
+                                  color: Colors.white,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ).marginOnly(top: 6),
+                          ),
+                        ]
+                      : <Widget>[]),
             ),
           ),
         ),

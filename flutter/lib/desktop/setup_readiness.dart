@@ -25,6 +25,7 @@ class SetupReadinessSnapshot {
     this.canMonitorInput = true,
     this.daemonInstalled = true,
     this.selinuxEnforcing = false,
+    this.showSelinuxWarning = true,
     this.currentSessionWayland = false,
     this.loginSessionWayland = false,
   });
@@ -40,6 +41,7 @@ class SetupReadinessSnapshot {
   final bool canMonitorInput;
   final bool daemonInstalled;
   final bool selinuxEnforcing;
+  final bool showSelinuxWarning;
   final bool currentSessionWayland;
   final bool loginSessionWayland;
 }
@@ -78,7 +80,7 @@ List<SetupReadinessIssue> resolveSetupReadinessIssues(
       break;
     case SetupReadinessPlatform.linux:
       if (snapshot.outgoingOnly) break;
-      if (snapshot.selinuxEnforcing) {
+      if (snapshot.selinuxEnforcing && snapshot.showSelinuxWarning) {
         issues.add(SetupReadinessIssue.selinux);
       }
       if (snapshot.currentSessionWayland) {

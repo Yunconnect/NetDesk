@@ -112,5 +112,18 @@ void main() {
       );
       expect(outgoingIssues, isEmpty);
     });
+
+    test('dismissed SELinux warning stays hidden without hiding Wayland', () {
+      final issues = resolveSetupReadinessIssues(
+        const SetupReadinessSnapshot(
+          platform: SetupReadinessPlatform.linux,
+          selinuxEnforcing: true,
+          showSelinuxWarning: false,
+          currentSessionWayland: true,
+        ),
+      );
+
+      expect(issues, const [SetupReadinessIssue.wayland]);
+    });
   });
 }
