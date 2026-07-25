@@ -12,11 +12,22 @@ button { border: 0; border-radius: 9px; padding: 10px 16px; color: white; backgr
 button:disabled { opacity: .55; cursor: wait; }
 .primary { width: 100%; margin-top: 22px; }
 .fingerprint { margin: 18px 0 0; padding-top: 16px; border-top: 1px solid #2a3850; color: #8291a8; font-size: 12px; overflow-wrap: anywhere; }
+.trust { display: grid; gap: 6px; margin-top: 16px; padding: 12px; border: 1px solid #9b7b35; border-radius: 10px; color: #f1d997; background: #4b391b55; font-size: 12px; }
+.trust a { width: fit-content; color: #8cc8ff; }
 #status { min-height: 22px; margin: 14px 0 0; color: #8ba1bd; text-align: center; }
 #status[data-error="true"] { color: #ff8b8b; }
 #viewer-panel { position: fixed; inset: 0; background: #05070b; }
-.toolbar { height: 50px; display: flex; align-items: center; gap: 10px; padding: 7px 12px; background: #121b2b; }
+.toolbar { min-height: 50px; display: flex; align-items: center; gap: 8px; padding: 7px 12px; background: #121b2b; overflow-x: auto; }
 .toolbar span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toolbar .stats { flex: 0 0 auto; color: #8291a8; font-size: 12px; }
 .toolbar button { padding: 7px 12px; background: #2a3850; }
+.toolbar select, .toolbar .text-input { width: auto; min-width: 110px; padding: 7px 9px; color: inherit; background: #202c40; border: 1px solid #394a65; border-radius: 8px; }
+.toolbar .text-input { min-width: 180px; }
 #screen { display: block; width: 100vw; height: calc(100vh - 50px); object-fit: contain; outline: none; cursor: default; }
+#screen[data-view-only="true"] { cursor: not-allowed; }
+@media (max-width: 900px) {
+  .toolbar { flex-wrap: wrap; }
+  .toolbar span { min-width: 180px; }
+  #screen { height: calc(100vh - 100px); touch-action: none; }
+}
 [hidden] { display: none !important; }

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { VideoFrame } from "../src/generated/message";
-import { decodeVideoBatch } from "../src/video";
+import { decodeVideoBatch, initialVideoDecodeState } from "../src/video";
 
 describe("WebCodecs video queue", () => {
   test("keeps the decoder open between a key-frame batch and following delta frames", () => {
@@ -14,26 +14,27 @@ describe("WebCodecs video queue", () => {
     };
     const createChunk = (init: EncodedVideoChunkInit) => init as unknown as EncodedVideoChunk;
 
-    let timestamp = decodeVideoBatch(
+    let state = decodeVideoBatch(
       decoder,
       VideoFrame.create({
         vp9s: { frames: [{ key: true, pts: 1n, data: new Uint8Array([1]) }] },
       }),
-      0,
+      initialVideoDecodeState(),
       createChunk,
     );
-    timestamp = decodeVideoBatch(
+    state = decodeVideoBatch(
       decoder,
       VideoFrame.create({
         vp9s: { frames: [{ key: false, pts: 2n, data: new Uint8Array([2]) }] },
       }),
-      timestamp,
+      state,
       createChunk,
     );
 
     expect(decoded.map(({ type }) => type)).toEqual(["key", "delta"]);
     expect(decoded.map(({ timestamp: value }) => value)).toEqual([1, 2]);
-    expect(timestamp).toBe(2);
+    expect(state.timestamp).toBe(2);
+    expect(state.droppedFrames).toBe(0);
     expect(flushCalls).toBe(0);
   });
 
@@ -43,7 +44,7 @@ describe("WebCodecs video queue", () => {
       decode: (chunk: EncodedVideoChunk) => decoded.push(chunk as unknown as EncodedVideoChunkInit),
     };
     const createChunk = (init: EncodedVideoChunkInit) => init as unknown as EncodedVideoChunk;
-    const timestamp = decodeVideoBatch(
+    const state = decodeVideoBatch(
       decoder,
       VideoFrame.create({
         vp9s: {
@@ -53,11 +54,91 @@ describe("WebCodecs video queue", () => {
           ],
         },
       }),
-      4,
+      { ...initialVideoDecodeState(), timestamp: 4 },
       createChunk,
     );
 
     expect(decoded.map(({ timestamp: value }) => value)).toEqual([5, 6]);
-    expect(timestamp).toBe(6);
+    expect(state.timestamp).toBe(6);
+  });
+
+  test("drops queued delta frames and resumes from a key frame", () => {
+    const decoded: EncodedVideoChunkInit[] = [];
+    let resets = 0;
+    const decoder = {
+      decodeQueueSize: 12,
+      decode: (chunk: EncodedVideoChunk) => decoded.push(chunk as unknown as EncodedVideoChunkInit),
+      reset: () => {
+        resets += 1;
+      },
+    };
+    const createChunk = (init: EncodedVideoChunkInit) => init as unknown as EncodedVideoChunk;
+
+    let state = decodeVideoBatch(
+      decoder,
+      VideoFrame.create({
+        vp9s: { frames: [{ key: false, pts: 1n, data: new Uint8Array([1]) }] },
+      }),
+      initialVideoDecodeState(),
+      createChunk,
+    );
+    expect(decoded).toHaveLength(0);
+    expect(state.awaitingKeyFrame).toBe(true);
+    expect(state.droppedFrames).toBe(1);
+
+    decoder.decodeQueueSize = 0;
+    state = decodeVideoBatch(
+      decoder,
+      VideoFrame.create({
+        vp9s: {
+          frames: [
+            { key: false, pts: 2n, data: new Uint8Array([2]) },
+            { key: true, pts: 3n, data: new Uint8Array([3]) },
+          ],
+        },
+      }),
+      state,
+      createChunk,
+    );
+    expect(decoded.map(({ type }) => type)).toEqual(["key"]);
+    expect(resets).toBe(1);
+    expect(state.awaitingKeyFrame).toBe(false);
+    expect(state.droppedFrames).toBe(2);
+  });
+
+  test("uses the browser chunk constructor in the production decode path", () => {
+    const decoded: EncodedVideoChunk[] = [];
+    const previousConstructor = globalThis.EncodedVideoChunk;
+    class TestChunk {
+      readonly type: EncodedVideoChunkType;
+      readonly timestamp: number;
+      readonly data: AllowSharedBufferSource;
+
+      constructor(init: EncodedVideoChunkInit) {
+        this.type = init.type;
+        this.timestamp = init.timestamp;
+        this.data = init.data;
+      }
+    }
+    Object.defineProperty(globalThis, "EncodedVideoChunk", {
+      configurable: true,
+      value: TestChunk,
+    });
+    try {
+      decodeVideoBatch(
+        { decode: (chunk) => decoded.push(chunk) },
+        VideoFrame.create({
+          h264s: { frames: [{ key: true, pts: 9n, data: new Uint8Array([9]) }] },
+        }),
+        initialVideoDecodeState("h264"),
+      );
+      expect(decoded[0]?.type).toBe("key");
+      expect(decoded[0]?.timestamp).toBe(9);
+    } finally {
+      Object.defineProperty(globalThis, "EncodedVideoChunk", {
+        configurable: true,
+        value: previousConstructor,
+      });
+    }
   });
 });

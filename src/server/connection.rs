@@ -68,6 +68,40 @@ use zeroize::Zeroize;
 use crate::virtual_display_manager;
 pub type Sender = mpsc::UnboundedSender<(Instant, Arc<Message>)>;
 
+#[derive(Copy, Clone)]
+struct WebPermissionSet {
+    keyboard: bool,
+    clipboard: bool,
+    audio: bool,
+    file: bool,
+    restart: bool,
+    recording: bool,
+    block_input: bool,
+    privacy_mode: bool,
+}
+
+fn web_permission_set(profile: &str) -> WebPermissionSet {
+    let collaboration = profile.eq_ignore_ascii_case("collaboration");
+    let control = collaboration || !profile.eq_ignore_ascii_case("view-only");
+    WebPermissionSet {
+        keyboard: control,
+        clipboard: collaboration,
+        audio: false,
+        file: false,
+        restart: false,
+        recording: false,
+        block_input: false,
+        privacy_mode: false,
+    }
+}
+
+fn web_permission_set_for_transport(
+    web_transport: bool,
+    profile: &str,
+) -> Option<WebPermissionSet> {
+    web_transport.then(|| web_permission_set(profile))
+}
+
 lazy_static::lazy_static! {
     static ref LOGIN_FAILURES: [Arc::<Mutex<HashMap<String, (i32, i32, i32)>>>; 2] = Default::default();
     static ref SESSIONS: Arc::<Mutex<HashMap<SessionKey, Session>>> = Default::default();
@@ -273,6 +307,7 @@ pub struct Connection {
     port_forward_address: String,
     tx_to_cm: mpsc::UnboundedSender<ipc::Data>,
     authorized: bool,
+    web_client: bool,
     keyboard: bool,
     clipboard: bool,
     audio: bool,
@@ -404,7 +439,6 @@ impl Connection {
         server: super::ServerPtrWeak,
         meta: super::ConnectionMeta,
     ) {
-        let _ = meta;
         let _raii_id = raii::ConnectionID::new(id);
         let (tx_from_cm_holder, mut rx_from_cm) = mpsc::unbounded_channel::<ipc::Data>();
         // holding tx_from_cm_holder to avoid cpu burning of rx_from_cm.recv when all sender closed
@@ -443,6 +477,7 @@ impl Connection {
             port_forward_address: "".to_owned(),
             tx_to_cm,
             authorized: false,
+            web_client: meta.web_client,
             keyboard: true,
             clipboard: true,
             audio: true,
@@ -1807,6 +1842,12 @@ impl Connection {
             self.send_login_error("LAN login protocol required").await;
             return false;
         };
+        let is_web_client = self.web_client;
+        if is_web_client && lr.union.is_some() {
+            self.send_login_error("Web sessions only support remote desktop access")
+                .await;
+            return false;
+        }
         let failure_keys = self.lan_auth_failure_keys();
         let retry_after = lan_auth_retry_after(&failure_keys);
         if retry_after > 0 {
@@ -1853,14 +1894,28 @@ impl Connection {
         clear_lan_auth_source(&self.ip);
         self.credential_revision_at_auth = Config::get_credential_revision();
         self.set_conn_audit_primary_auth(ConnAuditPrimaryAuth::LanCredential);
-        self.keyboard = true;
-        self.clipboard = true;
-        self.audio = true;
-        self.file = true;
-        self.restart = true;
-        self.recording = true;
-        self.block_input = true;
-        self.privacy_mode = true;
+        if let Some(permissions) = web_permission_set_for_transport(
+            is_web_client,
+            &Config::get_option("web-permission-profile"),
+        ) {
+            self.keyboard = permissions.keyboard;
+            self.clipboard = permissions.clipboard;
+            self.audio = permissions.audio;
+            self.file = permissions.file;
+            self.restart = permissions.restart;
+            self.recording = permissions.recording;
+            self.block_input = permissions.block_input;
+            self.privacy_mode = permissions.privacy_mode;
+        } else {
+            self.keyboard = true;
+            self.clipboard = true;
+            self.audio = true;
+            self.file = true;
+            self.restart = true;
+            self.recording = true;
+            self.block_input = true;
+            self.privacy_mode = true;
+        }
         if !self.configure_lan_connection_scope(lr).await {
             return false;
         }
@@ -6081,5 +6136,30 @@ mod test {
             scoped.terminal_persistent.enum_value(),
             Ok(BoolOption::NotSet)
         );
+    }
+
+    #[test]
+    fn browser_permission_profiles_never_inherit_native_admin_capabilities() {
+        let view = web_permission_set("view-only");
+        assert!(!view.keyboard);
+        assert!(!view.clipboard);
+        assert!(!view.file);
+        assert!(!view.restart);
+
+        let control = web_permission_set("");
+        assert!(control.keyboard);
+        assert!(!control.clipboard);
+        assert!(!control.audio);
+        assert!(!control.file);
+        assert!(!control.restart);
+
+        let collaboration = web_permission_set("collaboration");
+        assert!(collaboration.keyboard);
+        assert!(collaboration.clipboard);
+        assert!(!collaboration.audio);
+        assert!(!collaboration.file);
+        assert!(!collaboration.restart);
+        assert!(web_permission_set_for_transport(false, "view-only").is_none());
+        assert!(web_permission_set_for_transport(true, "view-only").is_some());
     }
 }

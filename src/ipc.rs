@@ -639,6 +639,10 @@ pub struct CheckIfRestart {
     web_listen_port: String,
     web_certificate_path: String,
     web_private_key_path: String,
+    web_listen_addresses: String,
+    web_allowed_networks: String,
+    web_allowed_hosts: String,
+    web_permission_profile: String,
     audio_input: String,
     voice_call_input: String,
 }
@@ -654,6 +658,10 @@ impl CheckIfRestart {
             web_listen_port: Config::get_option("web-listen-port"),
             web_certificate_path: Config::get_option("web-certificate-path"),
             web_private_key_path: Config::get_option("web-private-key-path"),
+            web_listen_addresses: Config::get_option("web-listen-addresses"),
+            web_allowed_networks: Config::get_option("web-allowed-networks"),
+            web_allowed_hosts: Config::get_option("web-allowed-hosts"),
+            web_permission_profile: Config::get_option("web-permission-profile"),
             audio_input: Config::get_option("audio-input"),
             voice_call_input: Config::get_option("voice-call-input"),
         }
@@ -669,6 +677,10 @@ impl Drop for CheckIfRestart {
             || self.web_listen_port != Config::get_option("web-listen-port")
             || self.web_certificate_path != Config::get_option("web-certificate-path")
             || self.web_private_key_path != Config::get_option("web-private-key-path")
+            || self.web_listen_addresses != Config::get_option("web-listen-addresses")
+            || self.web_allowed_networks != Config::get_option("web-allowed-networks")
+            || self.web_allowed_hosts != Config::get_option("web-allowed-hosts")
+            || self.web_permission_profile != Config::get_option("web-permission-profile")
         {
             crate::lan_server::LanServer::restart();
         }

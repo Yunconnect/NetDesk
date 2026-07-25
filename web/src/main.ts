@@ -1,5 +1,7 @@
 import {
   ControlKey,
+  ClipboardFormat,
+  ImageQuality,
   KeyboardMode,
   Message,
   OptionMessage_BoolOption,
@@ -9,8 +11,20 @@ import {
   type PeerInfo,
 } from "./generated/message";
 import { LanCryptoSession } from "./crypto";
+import {
+  chooseVideoCodec,
+  coalescePointerSample,
+  initialPointerSample,
+  type PointerSample,
+  type SelectedVideoCodec,
+} from "./capabilities";
 import { mapCanvasPoint, mouseMask, normalizeFingerprint } from "./protocol";
-import { decodeVideoBatch } from "./video";
+import { localizeDocument, translate, type TranslationKey } from "./i18n";
+import {
+  decodeVideoBatch,
+  initialVideoDecodeState,
+  type VideoDecodeState,
+} from "./video";
 
 interface ServerInfo {
   app_name: string;
@@ -18,6 +32,10 @@ interface ServerInfo {
   fingerprint: string;
   version: string;
   secure: boolean;
+  certificate_mode: "local-ca" | "custom";
+  ca_certificate_url: string;
+  video_worker_url: string;
+  permission_profile: "view-only" | "control" | "collaboration";
 }
 
 interface Credentials {
@@ -27,6 +45,8 @@ interface Credentials {
 
 const MAX_PASSWORD_LENGTH = 256;
 const encoder = new TextEncoder();
+const locale = localizeDocument();
+const t = (key: TranslationKey): string => translate(locale, key);
 
 function requiredElement<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);
@@ -47,6 +67,15 @@ const deviceName = requiredElement<HTMLElement>("device-name");
 const fingerprintElement = requiredElement<HTMLElement>("fingerprint");
 const statusElement = requiredElement<HTMLElement>("status");
 const viewerStatus = requiredElement<HTMLElement>("viewer-status");
+const connectionStats = requiredElement<HTMLElement>("connection-stats");
+const trustPanel = requiredElement<HTMLElement>("trust-panel");
+const caCertificateLink = requiredElement<HTMLAnchorElement>("ca-certificate");
+const displaySelect = requiredElement<HTMLSelectElement>("display");
+const qualitySelect = requiredElement<HTMLSelectElement>("quality");
+const clipboardReadButton = requiredElement<HTMLButtonElement>("clipboard-read");
+const clipboardWriteButton = requiredElement<HTMLButtonElement>("clipboard-write");
+const textInput = requiredElement<HTMLInputElement>("text-input");
+const sendTextButton = requiredElement<HTMLButtonElement>("send-text");
 
 let serverInfo: ServerInfo;
 let socket: WebSocket | undefined;
@@ -54,15 +83,27 @@ let cryptoSession: LanCryptoSession | undefined;
 let secured = false;
 let authenticated = false;
 let remoteDisplay: DisplayInfo | undefined;
+let peerInfo: PeerInfo | undefined;
 let decoder: VideoDecoder | undefined;
-let frameTimestamp = 0;
+let videoWorker: Worker | undefined;
+let canvasTransferred = false;
+let selectedCodec: SelectedVideoCodec | undefined;
+let videoDecodeState: VideoDecodeState = initialVideoDecodeState();
+let pendingPointerSample = initialPointerSample();
+let pointerAnimationFrame: number | undefined;
+let activePointerButton = 0;
+let lastFrameRenderedAt = 0;
+let renderedFrames = 0;
+let displayedFps = 0;
+let videoAckPending = false;
+let lastRemoteClipboard = "";
 
 function setStatus(message: string, error = false): void {
   statusElement.textContent = message;
   statusElement.dataset.error = error ? "true" : "false";
 }
 
-function resetConnection(message = "已断开"): void {
+function resetConnection(message = t("disconnected")): void {
   secured = false;
   authenticated = false;
   cryptoSession = undefined;
@@ -70,14 +111,27 @@ function resetConnection(message = "已断开"): void {
   socket = undefined;
   decoder?.close();
   decoder = undefined;
+  videoWorker?.postMessage({ type: "reset" });
   remoteDisplay = undefined;
+  peerInfo = undefined;
+  selectedCodec = undefined;
+  videoDecodeState = initialVideoDecodeState();
+  pendingPointerSample = undefined;
+  activePointerButton = 0;
+  if (pointerAnimationFrame !== undefined) cancelAnimationFrame(pointerAnimationFrame);
+  pointerAnimationFrame = undefined;
+  renderedFrames = 0;
+  displayedFps = 0;
+  lastFrameRenderedAt = 0;
+  videoAckPending = false;
+  lastRemoteClipboard = "";
   viewerPanel.hidden = true;
   connectPanel.hidden = false;
   viewerStatus.textContent = "";
   setStatus(message);
 }
 
-function closeConnection(message = "已断开"): void {
+function closeConnection(message = t("disconnected")): void {
   const active = socket;
   socket = undefined;
   if (active && active.readyState < WebSocket.CLOSING) active.close(1000, "client closed");
@@ -94,7 +148,9 @@ function send(message: Message): void {
   sendRaw(cryptoSession.encrypt(message));
 }
 
-function currentModifiers(event: KeyboardEvent | MouseEvent | WheelEvent): ControlKey[] {
+function currentModifiers(
+  event: Pick<KeyboardEvent, "altKey" | "ctrlKey" | "shiftKey" | "metaKey">,
+): ControlKey[] {
   const modifiers: ControlKey[] = [];
   if (event.altKey) modifiers.push(ControlKey.Alt);
   if (event.ctrlKey) modifiers.push(ControlKey.Control);
@@ -129,12 +185,13 @@ for (let index = 1; index <= 12; index += 1) {
   controlKeys[`F${index}`] = ControlKey[`F${index}` as keyof typeof ControlKey] as ControlKey;
 }
 
-function sendKey(event: KeyboardEvent): void {
-  if (!authenticated) return;
+function sendKey(event: KeyboardEvent, release = false): void {
+  if (!authenticated || serverInfo.permission_profile === "view-only") return;
   const controlKey = controlKeys[event.key];
+  if (release && controlKey === undefined) return;
   const keyEvent: Partial<KeyEvent> = {
-    down: false,
-    press: true,
+    down: !release,
+    press: !release,
     modifiers: currentModifiers(event),
     mode: KeyboardMode.Legacy,
   };
@@ -149,7 +206,26 @@ function sendKey(event: KeyboardEvent): void {
   send(Message.create({ key_event: keyEvent }));
 }
 
-function canvasCoordinates(event: MouseEvent): { x: number; y: number } {
+function sendText(value: string): void {
+  if (!authenticated || serverInfo.permission_profile === "view-only" || !value) return;
+  for (const character of Array.from(value)) {
+    const codePoint = character.codePointAt(0);
+    if (codePoint === undefined) continue;
+    send(
+      Message.create({
+        key_event: {
+          down: false,
+          press: true,
+          modifiers: [],
+          mode: KeyboardMode.Legacy,
+          unicode: codePoint,
+        },
+      }),
+    );
+  }
+}
+
+function canvasCoordinates(event: Pick<PointerSample, "clientX" | "clientY">): { x: number; y: number } {
   if (!remoteDisplay) return { x: 0, y: 0 };
   const bounds = canvas.getBoundingClientRect();
   return mapCanvasPoint(
@@ -164,8 +240,8 @@ function canvasCoordinates(event: MouseEvent): { x: number; y: number } {
   );
 }
 
-function sendMouse(event: MouseEvent, type: number): void {
-  if (!authenticated) return;
+function sendMouse(event: PointerSample, type: number): void {
+  if (!authenticated || serverInfo.permission_profile === "view-only") return;
   const point = canvasCoordinates(event);
   send(
     Message.create({
@@ -179,32 +255,164 @@ function sendMouse(event: MouseEvent, type: number): void {
   );
 }
 
+function pointerSample(event: PointerEvent): PointerSample {
+  return {
+    clientX: event.clientX,
+    clientY: event.clientY,
+    button: event.button,
+    buttons: event.buttons,
+    altKey: event.altKey,
+    ctrlKey: event.ctrlKey,
+    shiftKey: event.shiftKey,
+    metaKey: event.metaKey,
+  };
+}
+
+function queuePointerMove(event: PointerEvent): void {
+  pendingPointerSample = coalescePointerSample(pendingPointerSample, pointerSample(event));
+  if (pointerAnimationFrame !== undefined) return;
+  pointerAnimationFrame = requestAnimationFrame(() => {
+    pointerAnimationFrame = undefined;
+    const sample = pendingPointerSample;
+    pendingPointerSample = undefined;
+    if (sample) sendMouse(sample, 0);
+  });
+}
+
+function sendVideoAck(): void {
+  if (!authenticated) return;
+  try {
+    send(Message.create({ misc: { video_received: true } }));
+  } catch {
+    // A close event can race the decoder's final output callback.
+  }
+}
+
+function configureVideoWorker(codec: SelectedVideoCodec, display: DisplayInfo): boolean {
+  if (
+    !serverInfo.video_worker_url ||
+    typeof canvas.transferControlToOffscreen !== "function" ||
+    typeof Worker === "undefined"
+  ) {
+    return false;
+  }
+  let transferredCanvas: OffscreenCanvas | undefined;
+  if (!videoWorker) {
+    transferredCanvas = canvas.transferControlToOffscreen();
+    canvasTransferred = true;
+    videoWorker = new Worker(serverInfo.video_worker_url, { type: "module" });
+    videoWorker.addEventListener("message", (event: MessageEvent<{
+      type: "ack" | "stats" | "error";
+      fps?: number;
+      droppedFrames?: number;
+      message?: string;
+    }>) => {
+      if (event.data.type === "ack") {
+        sendVideoAck();
+      } else if (event.data.type === "stats") {
+        connectionStats.textContent =
+          `${event.data.fps ?? 0} FPS · ${event.data.droppedFrames ?? 0} dropped · ${selectedCodec?.protocol.toUpperCase() ?? ""}`;
+      } else {
+        closeConnection(`${t("decoderFailed")}: ${event.data.message ?? t("unknownError")}`);
+      }
+    });
+    videoWorker.addEventListener("error", () => closeConnection(t("decoderFailed")));
+  }
+  const message = {
+    type: "initialize",
+    canvas: transferredCanvas,
+    codec: codec.codec,
+    protocol: codec.protocol,
+    width: display.width,
+    height: display.height,
+  };
+  if (transferredCanvas) {
+    videoWorker.postMessage(message, [transferredCanvas]);
+  } else {
+    videoWorker.postMessage(message);
+  }
+  return true;
+}
+
+function videoFrameTransferables(frame: NonNullable<Message["video_frame"]>): Transferable[] {
+  const frames = frame.vp9s?.frames ?? frame.h264s?.frames ?? frame.av1s?.frames ?? [];
+  const buffers = new Set<ArrayBuffer>();
+  for (const encoded of frames) {
+    if (encoded.data.buffer instanceof ArrayBuffer) buffers.add(encoded.data.buffer);
+  }
+  return [...buffers];
+}
+
 function configureDecoder(peer: PeerInfo): void {
+  if (!selectedCodec) throw new Error(t("noCodec"));
+  const codec = selectedCodec;
+  peerInfo = peer;
   const display = peer.displays[peer.current_display] ?? peer.displays[0];
-  if (!display) throw new Error("远端没有可用显示器");
+  if (!display) throw new Error(t("noDisplay"));
   remoteDisplay = display;
-  canvas.width = display.width;
-  canvas.height = display.height;
-  const context = canvas.getContext("2d", { alpha: false });
-  if (!context) throw new Error("浏览器无法创建画布");
+  if (!canvasTransferred) {
+    canvas.width = display.width;
+    canvas.height = display.height;
+  }
   decoder?.close();
+  decoder = undefined;
+  videoAckPending = false;
+  videoDecodeState = initialVideoDecodeState(codec.protocol);
+  if (configureVideoWorker(codec, display)) {
+    connectionStats.textContent = `0 FPS · 0 dropped · ${codec.protocol.toUpperCase()}`;
+  } else {
+  const context = canvas.getContext("2d", { alpha: false });
+  if (!context) throw new Error(t("canvasUnavailable"));
   decoder = new VideoDecoder({
     output: (frame) => {
       context.drawImage(frame, 0, 0, canvas.width, canvas.height);
       frame.close();
+      renderedFrames += 1;
+      const now = performance.now();
+      if (lastFrameRenderedAt === 0) lastFrameRenderedAt = now;
+      if (now - lastFrameRenderedAt >= 1_000) {
+        displayedFps = Math.round((renderedFrames * 1_000) / (now - lastFrameRenderedAt));
+        renderedFrames = 0;
+        lastFrameRenderedAt = now;
+        connectionStats.textContent =
+          `${displayedFps} FPS · ${videoDecodeState.droppedFrames} dropped · ${codec.protocol.toUpperCase()}`;
+      }
+      if (videoAckPending && authenticated) {
+        videoAckPending = false;
+        sendVideoAck();
+      }
     },
-    error: (error) => closeConnection(`视频解码失败：${error.message}`),
+    error: (error) => closeConnection(`${t("decoderFailed")}: ${error.message}`),
   });
   decoder.configure({
-    codec: "vp09.00.10.08",
+    codec: codec.codec,
     codedWidth: display.width,
     codedHeight: display.height,
     optimizeForLatency: true,
+    hardwareAcceleration: "prefer-hardware",
   });
+  }
+  displaySelect.replaceChildren(
+    ...peer.displays.map((item, index) => {
+      const option = document.createElement("option");
+      option.value = index.toString();
+      option.textContent = `${t("display")} ${index + 1} · ${item.width}×${item.height}`;
+      option.selected = item === display;
+      return option;
+    }),
+  );
+  displaySelect.hidden = peer.displays.length <= 1;
   viewerStatus.textContent = `${peer.hostname || serverInfo.device_name} · ${display.width}×${display.height}`;
 }
 
 function authenticate(username: string, password: string): void {
+  if (!selectedCodec) throw new Error(t("noCodec"));
+  const prefer =
+    selectedCodec.protocol === "h264"
+      ? SupportedDecoding_PreferCodec.H264
+      : selectedCodec.protocol === "av1"
+        ? SupportedDecoding_PreferCodec.AV1
+        : SupportedDecoding_PreferCodec.VP9;
   const passwordBytes = encoder.encode(password);
   try {
     send(
@@ -225,11 +433,16 @@ function authenticate(username: string, password: string): void {
           },
           option: {
             disable_audio: OptionMessage_BoolOption.Yes,
-            disable_clipboard: OptionMessage_BoolOption.Yes,
+            disable_clipboard:
+              serverInfo.permission_profile === "collaboration"
+                ? OptionMessage_BoolOption.No
+                : OptionMessage_BoolOption.Yes,
             show_remote_cursor: OptionMessage_BoolOption.No,
             supported_decoding: {
-              ability_vp9: 1,
-              prefer: SupportedDecoding_PreferCodec.VP9,
+              ability_vp9: selectedCodec.protocol === "vp9" ? 1 : 0,
+              ability_h264: selectedCodec.protocol === "h264" ? 1 : 0,
+              ability_av1: selectedCodec.protocol === "av1" ? 1 : 0,
+              prefer,
             },
           },
         },
@@ -251,7 +464,7 @@ async function handleMessage(payload: Uint8Array, credentials: Credentials): Pro
     }
     sendRaw(result.keyMessage);
     secured = true;
-    setStatus("安全通道已建立，正在认证…");
+    setStatus(t("secureChannel"));
     authenticate(credentials.username, credentials.password);
     credentials.password = "";
     return;
@@ -269,23 +482,68 @@ async function handleMessage(payload: Uint8Array, credentials: Credentials): Pro
     connectPanel.hidden = true;
     viewerPanel.hidden = false;
     canvas.focus();
-    setStatus("已连接");
+    setStatus(t("connected"));
   }
   if (message.peer_info) configureDecoder(message.peer_info);
   if (message.video_frame) {
-    if (decoder) frameTimestamp = decodeVideoBatch(decoder, message.video_frame, frameTimestamp);
-    send(Message.create({ misc: { video_received: true } }));
+    if (videoWorker) {
+      videoWorker.postMessage(
+        { type: "frame", frame: message.video_frame },
+        videoFrameTransferables(message.video_frame),
+      );
+    } else if (decoder) {
+      const previousDropped = videoDecodeState.droppedFrames;
+      videoDecodeState = decodeVideoBatch(decoder, message.video_frame, videoDecodeState);
+      if (
+        videoDecodeState.awaitingKeyFrame ||
+        videoDecodeState.droppedFrames > previousDropped
+      ) {
+        sendVideoAck();
+      } else {
+        videoAckPending = true;
+      }
+    } else {
+      sendVideoAck();
+    }
   }
   if (message.test_delay && !message.test_delay.from_client) {
     send(Message.create({ test_delay: message.test_delay }));
   }
   if (message.misc?.close_reason) closeConnection(message.misc.close_reason);
   if (message.message_box?.text) viewerStatus.textContent = message.message_box.text;
+  if (
+    message.clipboard &&
+    serverInfo.permission_profile === "collaboration" &&
+    !message.clipboard.compress &&
+    message.clipboard.format === ClipboardFormat.Text
+  ) {
+    const text = new TextDecoder().decode(message.clipboard.content);
+    lastRemoteClipboard = text;
+    void navigator.clipboard.writeText(text).catch(() => {
+      viewerStatus.textContent = t("remoteClipboardPermission");
+    });
+  }
 }
 
 async function connect(username: string, password: string): Promise<void> {
   if (!("VideoDecoder" in window) || !("EncodedVideoChunk" in window)) {
-    throw new Error("当前浏览器不支持 WebCodecs，请使用最新版 Chrome 或 Edge");
+    throw new Error(t("webCodecsUnsupported"));
+  }
+  selectedCodec = await chooseVideoCodec(async (codec) => {
+    try {
+      const result = await VideoDecoder.isConfigSupported({
+        codec,
+        codedWidth: 1920,
+        codedHeight: 1080,
+        optimizeForLatency: true,
+      });
+      return result.supported === true;
+    } catch {
+      return false;
+    }
+  });
+  if (!selectedCodec) {
+    throw new Error(t("codecUnsupported"));
   }
   cryptoSession = await LanCryptoSession.create();
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
@@ -297,7 +555,7 @@ async function connect(username: string, password: string): Promise<void> {
 
   nextSocket.addEventListener("open", () => {
     if (socket !== nextSocket || !cryptoSession) return;
-    setStatus("正在校验设备身份…");
+    setStatus(t("verifyingIdentity"));
     sendRaw(cryptoSession.clientHello());
   });
   nextSocket.addEventListener("message", (event) => {
@@ -305,18 +563,20 @@ async function connect(username: string, password: string): Promise<void> {
     receiveQueue = receiveQueue
       .then(() => handleMessage(new Uint8Array(event.data), credentials))
       .catch((error: unknown) => {
-        closeConnection(error instanceof Error ? error.message : "连接失败");
+        closeConnection(error instanceof Error ? error.message : t("connectionFailed"));
         statusElement.dataset.error = "true";
       });
   });
   nextSocket.addEventListener("error", () => {
     credentials.password = "";
-    if (socket === nextSocket) closeConnection("网络连接失败");
+    if (socket === nextSocket) closeConnection(t("networkFailed"));
     statusElement.dataset.error = "true";
   });
   nextSocket.addEventListener("close", () => {
     credentials.password = "";
-    if (socket === nextSocket) resetConnection(authenticated ? "远端已断开" : "连接已关闭");
+    if (socket === nextSocket) {
+      resetConnection(authenticated ? t("remoteDisconnected") : t("connectionClosed"));
+    }
   });
 }
 
@@ -325,18 +585,18 @@ loginForm.addEventListener("submit", (event) => {
   const username = usernameInput.value.trim();
   const password = passwordInput.value;
   if (!username || !password) {
-    setStatus("请输入访问用户名和密码", true);
+    setStatus(t("enterCredentials"), true);
     return;
   }
   if (encoder.encode(password).length > MAX_PASSWORD_LENGTH) {
-    setStatus("密码过长", true);
+    setStatus(t("passwordTooLong"), true);
     return;
   }
   connectButton.disabled = true;
-  setStatus("正在连接…");
+  setStatus(t("connecting"));
   passwordInput.value = "";
   void connect(username, password).catch((error: unknown) => {
-    resetConnection(error instanceof Error ? error.message : "连接失败");
+    resetConnection(error instanceof Error ? error.message : t("connectionFailed"));
     statusElement.dataset.error = "true";
   });
 });
@@ -344,16 +604,26 @@ loginForm.addEventListener("submit", (event) => {
 disconnectButton.addEventListener("click", () => closeConnection());
 fullscreenButton.addEventListener("click", () => void viewerPanel.requestFullscreen());
 canvas.addEventListener("contextmenu", (event) => event.preventDefault());
-canvas.addEventListener("mousemove", (event) => sendMouse(event, 0));
-canvas.addEventListener("mousedown", (event) => {
+canvas.addEventListener("pointermove", queuePointerMove);
+canvas.addEventListener("pointerdown", (event) => {
   canvas.focus();
-  sendMouse(event, 1);
+  canvas.setPointerCapture(event.pointerId);
+  activePointerButton = event.button;
+  sendMouse(pointerSample(event), 1);
 });
-canvas.addEventListener("mouseup", (event) => sendMouse(event, 2));
+canvas.addEventListener("pointerup", (event) => {
+  if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+  sendMouse(pointerSample(event), 2);
+  activePointerButton = 0;
+});
+canvas.addEventListener("pointercancel", (event) => {
+  sendMouse({ ...pointerSample(event), button: activePointerButton, buttons: 0 }, 2);
+  activePointerButton = 0;
+});
 canvas.addEventListener(
   "wheel",
   (event) => {
-    if (!authenticated) return;
+    if (!authenticated || serverInfo.permission_profile === "view-only") return;
     event.preventDefault();
     send(
       Message.create({
@@ -368,7 +638,67 @@ canvas.addEventListener(
   },
   { passive: false },
 );
-canvas.addEventListener("keydown", sendKey);
+canvas.addEventListener("keydown", (event) => sendKey(event));
+canvas.addEventListener("keyup", (event) => sendKey(event, true));
+sendTextButton.addEventListener("click", () => {
+  sendText(textInput.value);
+  textInput.value = "";
+  canvas.focus();
+});
+textInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    sendTextButton.click();
+  }
+});
+displaySelect.addEventListener("change", () => {
+  const display = peerInfo?.displays[Number(displaySelect.value)];
+  if (!display) return;
+  send(
+    Message.create({
+      misc: {
+        switch_display: {
+          display: Number(displaySelect.value),
+          x: display.x,
+          y: display.y,
+          width: display.width,
+          height: display.height,
+          cursor_embedded: false,
+        },
+      },
+    }),
+  );
+});
+qualitySelect.addEventListener("change", () => {
+  const quality = Number(qualitySelect.value) as ImageQuality;
+  send(Message.create({ misc: { option: { image_quality: quality } } }));
+});
+clipboardReadButton.addEventListener("click", () => {
+  void navigator.clipboard
+    .readText()
+    .then((text) => {
+      send(
+        Message.create({
+          clipboard: {
+            compress: false,
+            content: encoder.encode(text),
+            width: 0,
+            height: 0,
+            format: ClipboardFormat.Text,
+            special_name: "",
+          },
+        }),
+      );
+    })
+    .catch(() => {
+      viewerStatus.textContent = t("clipboardReadPermission");
+    });
+});
+clipboardWriteButton.addEventListener("click", () => {
+  void navigator.clipboard.writeText(lastRemoteClipboard).catch(() => {
+    viewerStatus.textContent = t("clipboardWritePermission");
+  });
+});
 
 void fetch("/api/info", { cache: "no-store", credentials: "same-origin" })
   .then(async (response) => {
@@ -376,10 +706,24 @@ void fetch("/api/info", { cache: "no-store", credentials: "same-origin" })
     serverInfo = (await response.json()) as ServerInfo;
     deviceName.textContent = serverInfo.device_name;
     fingerprintElement.textContent = serverInfo.fingerprint.match(/.{1,4}/g)?.join(" ") ?? serverInfo.fingerprint;
+    if (serverInfo.certificate_mode === "local-ca" && serverInfo.ca_certificate_url) {
+      trustPanel.hidden = false;
+      caCertificateLink.href = serverInfo.ca_certificate_url;
+    }
+    const collaboration = serverInfo.permission_profile === "collaboration";
+    clipboardReadButton.hidden = !collaboration;
+    clipboardWriteButton.hidden = !collaboration;
+    const viewOnly = serverInfo.permission_profile === "view-only";
+    textInput.hidden = viewOnly;
+    sendTextButton.hidden = viewOnly;
+    canvas.dataset.viewOnly = viewOnly ? "true" : "false";
     connectButton.disabled = false;
-    setStatus(serverInfo.secure ? "HTTPS 已启用" : "警告：当前使用未加密 HTTP", !serverInfo.secure);
+    setStatus(serverInfo.secure ? t("httpsEnabled") : t("insecureHttp"), !serverInfo.secure);
   })
   .catch((error: unknown) => {
     connectButton.disabled = true;
-    setStatus(`无法读取设备信息：${error instanceof Error ? error.message : "未知错误"}`, true);
+    setStatus(
+      `${t("cannotReadDeviceInfo")}: ${error instanceof Error ? error.message : t("unknownError")}`,
+      true,
+    );
   });

@@ -1,13 +1,16 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs::{self, OpenOptions},
     future::Future,
     io::{self, Write},
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     pin::Pin,
-    sync::Arc,
-    time::Duration,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
@@ -17,7 +20,7 @@ use axum::{
         ConnectInfo, State,
     },
     http::{
-        header::{CACHE_CONTROL, CONTENT_TYPE, HOST, ORIGIN},
+        header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE, HOST, ORIGIN},
         HeaderMap, HeaderValue, Request, StatusCode, Uri,
     },
     middleware::{self, Next},
@@ -36,34 +39,55 @@ use hbb_common::{
     bytes_codec::BytesCodec,
     config::Config,
     futures::{SinkExt, StreamExt},
-    log, tcp,
+    log,
+    sha2::{Digest, Sha256},
+    tcp,
     tokio::{
         self,
         io::{duplex, AsyncReadExt, AsyncWriteExt},
         net::TcpStream,
-        sync::watch,
+        sync::{watch, OwnedSemaphorePermit, Semaphore},
         time::timeout,
     },
     tokio_util::codec::Framed,
     ResultType, Stream,
 };
-use rcgen::CertifiedKey;
+use rcgen::{
+    BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, IsCa,
+    KeyPair, KeyUsagePurpose,
+};
 use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
+use tower_http::compression::CompressionLayer;
+use x509_parser::prelude::{parse_x509_certificate, GeneralName};
 use zeroize::Zeroize;
 
 use crate::server::ServerPtr;
 
 pub const DEFAULT_WEB_PORT: u16 = 18_123;
 pub const MAX_WEBSOCKET_PAYLOAD_LEN: usize = 32 * 1024 * 1024;
+pub const MAX_WEBSOCKET_CLIENT_PAYLOAD_LEN: usize = 256 * 1024;
+const MAX_WEB_CONNECTIONS: usize = 16;
+const MAX_WEB_CONNECTIONS_PER_SOURCE: usize = 4;
+const MAX_WEB_REQUESTS_PER_MINUTE: usize = 120;
 const WEB_CERTIFICATE_FILENAME: &str = "web-cert.der";
 const WEB_PRIVATE_KEY_FILENAME: &str = "web-key.der";
+const WEB_CA_CERTIFICATE_FILENAME: &str = "web-ca-cert.der";
+const WEB_CA_PRIVATE_KEY_FILENAME: &str = "web-ca-key.der";
+const WEB_CERTIFICATE_METADATA_FILENAME: &str = "web-cert-metadata.json";
+const WEB_RUNTIME_STATUS_FILENAME: &str = "web-runtime.json";
 const MAX_HTTP_REDIRECT_REQUEST_LEN: usize = 16 * 1024;
 const MAX_CUSTOM_CERTIFICATE_LEN: u64 = 4 * 1024 * 1024;
 const MAX_CUSTOM_PRIVATE_KEY_LEN: u64 = 1024 * 1024;
 const HTTP_REDIRECT_TIMEOUT: Duration = Duration::from_secs(5);
+const WEB_SOCKET_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+const WEB_SOCKET_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+const WEB_RUNTIME_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
+const WEB_RUNTIME_STALE_SECONDS: u64 = 5;
 const INDEX_HTML: &str = include_str!("../web/dist/index.html");
 const APP_JS: &[u8] = include_bytes!("../web/dist/app.js");
+const VIDEO_WORKER_JS: &[u8] = include_bytes!("../web/dist/video-worker.js");
 const STYLE_CSS: &str = include_str!("../web/dist/style.css");
+const GENERATED_CERTIFICATE_ROTATION_SECONDS: u64 = 30 * 24 * 60 * 60;
 const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; base-uri 'none'; connect-src 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; worker-src 'self' blob:";
 
 #[derive(Clone)]
@@ -71,10 +95,224 @@ struct WebState {
     server: ServerPtr,
     secure: bool,
     allowed_hosts: Arc<HashSet<String>>,
+    connection_limiter: ConnectionLimiter,
+    request_budget: Arc<Mutex<RequestRateBudget>>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+struct GeneratedCertificateMetadata {
+    subject_alt_names: Vec<String>,
+    generated_at_unix_seconds: u64,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub(crate) struct WebRuntimeStatus {
+    pub state: String,
+    pub endpoints: Vec<String>,
+    pub last_error: String,
+    pub updated_at_unix_seconds: u64,
+    pub process_id: u32,
+    pub active_sessions: usize,
+}
+
+static ACTIVE_WEB_SESSIONS: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Clone)]
+struct ConnectionLimiter {
+    global: Arc<Semaphore>,
+    per_source: Arc<Mutex<HashMap<IpAddr, usize>>>,
+    max_per_source: usize,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum ConnectionLimitError {
+    Global,
+    Source,
+}
+
+struct ConnectionPermit {
+    _global: OwnedSemaphorePermit,
+    source: IpAddr,
+    per_source: Arc<Mutex<HashMap<IpAddr, usize>>>,
+}
+
+impl ConnectionLimiter {
+    fn new(max_global: usize, max_per_source: usize) -> Self {
+        Self {
+            global: Arc::new(Semaphore::new(max_global)),
+            per_source: Arc::new(Mutex::new(HashMap::new())),
+            max_per_source,
+        }
+    }
+
+    fn try_acquire(&self, source: IpAddr) -> Result<ConnectionPermit, ConnectionLimitError> {
+        let global = self
+            .global
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| ConnectionLimitError::Global)?;
+        let mut sources = self.per_source.lock().unwrap();
+        let count = sources.entry(source).or_default();
+        if *count >= self.max_per_source {
+            return Err(ConnectionLimitError::Source);
+        }
+        *count += 1;
+        ACTIVE_WEB_SESSIONS.fetch_add(1, Ordering::SeqCst);
+        drop(sources);
+        Ok(ConnectionPermit {
+            _global: global,
+            source,
+            per_source: self.per_source.clone(),
+        })
+    }
+}
+
+impl Drop for ConnectionPermit {
+    fn drop(&mut self) {
+        ACTIVE_WEB_SESSIONS.fetch_sub(1, Ordering::SeqCst);
+        let mut sources = self.per_source.lock().unwrap();
+        if let Some(count) = sources.get_mut(&self.source) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                sources.remove(&self.source);
+            }
+        }
+    }
+}
+
+fn unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn runtime_status_path() -> PathBuf {
+    Config::path(WEB_RUNTIME_STATUS_FILENAME)
+}
+
+fn runtime_status_is_fresh(updated_at: u64, now: u64) -> bool {
+    now >= updated_at && now.saturating_sub(updated_at) <= WEB_RUNTIME_STALE_SECONDS
+}
+
+fn write_runtime_status(state: &str, endpoints: &[String], last_error: &str) -> ResultType<()> {
+    let status = WebRuntimeStatus {
+        state: state.to_owned(),
+        endpoints: endpoints.to_vec(),
+        last_error: last_error.to_owned(),
+        updated_at_unix_seconds: unix_seconds(),
+        process_id: std::process::id(),
+        active_sessions: ACTIVE_WEB_SESSIONS.load(Ordering::SeqCst),
+    };
+    let path = runtime_status_path();
+    let bytes = serde_json::to_vec(&status).context("Failed to encode Web runtime status")?;
+    let temp_path = path.with_extension("json.tmp");
+    write_private_file(&temp_path, &bytes)?;
+    #[cfg(windows)]
+    if path.exists() {
+        fs::remove_file(&path)
+            .with_context(|| format!("Failed to replace Web runtime status {}", path.display()))?;
+    }
+    fs::rename(&temp_path, &path)
+        .with_context(|| format!("Failed to publish Web runtime status {}", path.display()))
+}
+
+pub(crate) fn record_start_failure(error: &str) {
+    if let Err(write_error) = write_runtime_status("failed", &[], error) {
+        log::debug!("Failed to record Web startup error: {write_error}");
+    }
+}
+
+pub(crate) fn runtime_status() -> WebRuntimeStatus {
+    if !is_enabled() {
+        return WebRuntimeStatus {
+            state: "disabled".to_owned(),
+            endpoints: Vec::new(),
+            last_error: String::new(),
+            updated_at_unix_seconds: unix_seconds(),
+            process_id: 0,
+            active_sessions: 0,
+        };
+    }
+    let path = runtime_status_path();
+    let parsed = fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<WebRuntimeStatus>(&bytes).ok());
+    match parsed {
+        Some(mut status)
+            if runtime_status_is_fresh(status.updated_at_unix_seconds, unix_seconds()) =>
+        {
+            status.active_sessions = ACTIVE_WEB_SESSIONS
+                .load(Ordering::SeqCst)
+                .max(status.active_sessions);
+            status
+        }
+        Some(status) => WebRuntimeStatus {
+            state: "stale".to_owned(),
+            endpoints: status.endpoints,
+            last_error: "Web runtime heartbeat is stale".to_owned(),
+            updated_at_unix_seconds: status.updated_at_unix_seconds,
+            process_id: status.process_id,
+            active_sessions: 0,
+        },
+        None => WebRuntimeStatus {
+            state: "starting".to_owned(),
+            endpoints: Vec::new(),
+            last_error: String::new(),
+            updated_at_unix_seconds: unix_seconds(),
+            process_id: 0,
+            active_sessions: 0,
+        },
+    }
+}
+
+struct RequestRateBudget {
+    max_requests: usize,
+    window: Duration,
+    sources: HashMap<IpAddr, (Instant, usize)>,
+}
+
+impl RequestRateBudget {
+    fn new(max_requests: usize, window: Duration) -> Self {
+        Self {
+            max_requests,
+            window,
+            sources: HashMap::new(),
+        }
+    }
+
+    fn allow(&mut self, source: IpAddr) -> bool {
+        self.allow_at(source, Instant::now())
+    }
+
+    fn allow_at(&mut self, source: IpAddr, now: Instant) -> bool {
+        self.sources
+            .retain(|_, (started, _)| now.duration_since(*started) < self.window);
+        let (started, count) = self.sources.entry(source).or_insert((now, 0));
+        if now.duration_since(*started) >= self.window {
+            *started = now;
+            *count = 0;
+        }
+        if *count >= self.max_requests {
+            return false;
+        }
+        *count += 1;
+        true
+    }
 }
 
 fn option_enabled(value: &str) -> bool {
     value == "Y"
+}
+
+fn normalized_web_permission_profile(value: &str) -> &'static str {
+    if value.eq_ignore_ascii_case("view-only") {
+        "view-only"
+    } else if value.eq_ignore_ascii_case("collaboration") {
+        "collaboration"
+    } else {
+        "control"
+    }
 }
 
 fn https_required() -> bool {
@@ -196,6 +434,29 @@ fn certificate_paths() -> (PathBuf, PathBuf) {
     )
 }
 
+fn certificate_authority_paths() -> (PathBuf, PathBuf) {
+    (
+        Config::path(WEB_CA_CERTIFICATE_FILENAME),
+        Config::path(WEB_CA_PRIVATE_KEY_FILENAME),
+    )
+}
+
+pub(crate) fn certificate_authority_path_for_ui() -> String {
+    if !Config::get_option("web-certificate-path").trim().is_empty() {
+        return String::new();
+    }
+    let (path, _) = certificate_authority_paths();
+    if path.is_file() {
+        path.to_string_lossy().into_owned()
+    } else {
+        String::new()
+    }
+}
+
+fn certificate_metadata_path() -> PathBuf {
+    Config::path(WEB_CERTIFICATE_METADATA_FILENAME)
+}
+
 fn custom_certificate_paths(
     certificate_path: &str,
     private_key_path: &str,
@@ -283,6 +544,7 @@ fn validate_tls_material(certificate: &[u8], private_key: &[u8]) -> ResultType<(
     if certificates.is_empty() {
         bail!("Custom Web certificate must contain at least one PEM certificate");
     }
+    validate_custom_certificate_identity(certificates[0].as_ref())?;
     let mut private_keys = PrivateKeyDer::pem_slice_iter(private_key)
         .collect::<Result<Vec<_>, _>>()
         .context("Custom Web private key is not a supported PEM private key")?;
@@ -296,19 +558,78 @@ fn validate_tls_material(certificate: &[u8], private_key: &[u8]) -> ResultType<(
     Ok(())
 }
 
+fn dns_name_matches(pattern: &str, host: &str) -> bool {
+    let pattern = pattern.to_ascii_lowercase();
+    let host = host.to_ascii_lowercase();
+    if pattern == host {
+        return true;
+    }
+    let Some(suffix) = pattern.strip_prefix("*.") else {
+        return false;
+    };
+    let Some(prefix) = host.strip_suffix(suffix) else {
+        return false;
+    };
+    prefix.ends_with('.') && !prefix[..prefix.len() - 1].contains('.')
+}
+
+fn validate_custom_certificate_identity(certificate: &[u8]) -> ResultType<()> {
+    let (_, certificate) = parse_x509_certificate(certificate)
+        .map_err(|_| anyhow!("Custom Web certificate could not be parsed"))?;
+    if !certificate.validity().is_valid() {
+        bail!("Custom Web certificate is expired or not yet valid");
+    }
+    let configured_hosts = Config::get_option("web-allowed-hosts")
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(normalize_configured_host)
+        .collect::<Result<Vec<_>, _>>()?;
+    if configured_hosts.is_empty() {
+        return Ok(());
+    }
+    let names = certificate
+        .subject_alternative_name()
+        .context("Custom Web certificate has an invalid subject alternative name extension")?
+        .ok_or_else(|| anyhow!("Custom Web certificate has no subject alternative names"))?;
+    for host in configured_hosts {
+        let host_ip = host.parse::<IpAddr>().ok();
+        let covered = names.value.general_names.iter().any(|name| match name {
+            GeneralName::DNSName(pattern) if host_ip.is_none() => dns_name_matches(pattern, &host),
+            GeneralName::IPAddress(bytes) => match (host_ip, bytes.len()) {
+                (Some(IpAddr::V4(expected)), 4) => expected.octets().as_slice() == *bytes,
+                (Some(IpAddr::V6(expected)), 16) => expected.octets().as_slice() == *bytes,
+                _ => false,
+            },
+            _ => false,
+        });
+        if !covered {
+            bail!("Custom Web certificate does not cover allowed host {host}");
+        }
+    }
+    Ok(())
+}
+
 fn certificate_subject_alt_names() -> Vec<String> {
     let mut names = vec!["localhost".to_owned(), "subnetdesk.local".to_owned()];
+    names.extend(
+        Config::get_option("web-allowed-hosts")
+            .split(',')
+            .filter_map(|value| normalize_configured_host(value).ok()),
+    );
     for interface in default_net::get_interfaces() {
         names.extend(
             interface
                 .ipv4
                 .into_iter()
+                .filter(|network| web_source_allowed(IpAddr::V4(network.addr)))
                 .map(|network| network.addr.to_string()),
         );
         names.extend(
             interface
                 .ipv6
                 .into_iter()
+                .filter(|network| web_source_allowed(IpAddr::V6(network.addr)))
                 .map(|network| network.addr.to_string()),
         );
     }
@@ -317,13 +638,73 @@ fn certificate_subject_alt_names() -> Vec<String> {
     names
 }
 
-fn allowed_hosts() -> Arc<HashSet<String>> {
-    Arc::new(
-        certificate_subject_alt_names()
+pub(crate) fn certificate_address_signature() -> Vec<String> {
+    certificate_subject_alt_names()
+}
+
+fn normalize_configured_host(value: &str) -> ResultType<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        bail!("Web allowed host must not be empty");
+    }
+    let url = url::Url::parse(&format!("http://{value}"))
+        .map_err(|_| anyhow!("Invalid Web allowed host: {value}"))?;
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.port().is_some()
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        bail!("Invalid Web allowed host: {value}");
+    }
+    url.host()
+        .map(|host| {
+            host.to_string()
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .to_ascii_lowercase()
+        })
+        .ok_or_else(|| anyhow!("Invalid Web allowed host: {value}"))
+}
+
+fn configured_allowed_hosts(
+    configured: &str,
+    base_hosts: Vec<String>,
+) -> ResultType<HashSet<String>> {
+    let configured_hosts = configured
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(normalize_configured_host)
+        .collect::<Result<HashSet<_>, _>>()?;
+    if configured_hosts.is_empty() {
+        Ok(base_hosts
             .into_iter()
             .map(|host| host.to_ascii_lowercase())
-            .collect(),
-    )
+            .collect())
+    } else {
+        Ok(configured_hosts)
+    }
+}
+
+fn allowed_hosts() -> ResultType<Arc<HashSet<String>>> {
+    let configured = Config::get_option("web-allowed-hosts");
+    if configured.trim().is_empty() && !Config::get_option("web-certificate-path").trim().is_empty()
+    {
+        bail!("Web allowed host names are required with a custom certificate");
+    }
+    configured_allowed_hosts(&configured, certificate_subject_alt_names()).map(Arc::new)
+}
+
+fn generated_certificate_needs_rotation(
+    metadata: &GeneratedCertificateMetadata,
+    subject_alt_names: &[String],
+    now_unix_seconds: u64,
+) -> bool {
+    metadata.subject_alt_names != subject_alt_names
+        || now_unix_seconds.saturating_sub(metadata.generated_at_unix_seconds)
+            >= GENERATED_CERTIFICATE_ROTATION_SECONDS
 }
 
 fn write_private_file(path: &Path, bytes: &[u8]) -> ResultType<()> {
@@ -371,25 +752,83 @@ fn secure_private_file_permissions(_path: &Path) -> ResultType<()> {
     Ok(())
 }
 
-fn generate_self_signed_certificate() -> ResultType<(Vec<u8>, Vec<u8>)> {
-    let CertifiedKey { cert, key_pair } =
-        rcgen::generate_simple_self_signed(certificate_subject_alt_names())
-            .context("Failed to generate the self-signed Web certificate")?;
-    Ok((cert.der().to_vec(), key_pair.serialize_der()))
+fn certificate_authority_params() -> CertificateParams {
+    let mut params = CertificateParams::default();
+    let mut distinguished_name = DistinguishedName::new();
+    distinguished_name.push(DnType::CommonName, "SubnetDesk Local CA");
+    params.distinguished_name = distinguished_name;
+    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    params.key_usages = vec![
+        KeyUsagePurpose::KeyCertSign,
+        KeyUsagePurpose::DigitalSignature,
+        KeyUsagePurpose::CrlSign,
+    ];
+    params
 }
 
-fn load_or_generate_certificate() -> ResultType<(Vec<u8>, Vec<u8>)> {
-    let (certificate_path, private_key_path) = certificate_paths();
+fn generate_certificate_authority() -> ResultType<(Vec<u8>, Vec<u8>)> {
+    let key_pair =
+        KeyPair::generate().context("Failed to generate the Web certificate authority key")?;
+    let certificate = certificate_authority_params()
+        .self_signed(&key_pair)
+        .context("Failed to generate the Web certificate authority")?;
+    Ok((certificate.der().to_vec(), key_pair.serialize_der()))
+}
+
+fn certificate_authority_material_valid(certificate: &[u8], private_key: &[u8]) -> bool {
+    let Ok(key_pair) = KeyPair::try_from(private_key) else {
+        return false;
+    };
+    let Ok((remaining, certificate)) = parse_x509_certificate(certificate) else {
+        return false;
+    };
+    remaining.is_empty()
+        && certificate.validity().is_valid()
+        && certificate.is_ca()
+        && certificate.public_key().raw == key_pair.public_key_der()
+}
+
+fn generate_leaf_certificate(
+    certificate_authority_key: &[u8],
+    subject_alt_names: &[String],
+) -> ResultType<(Vec<u8>, Vec<u8>)> {
+    let certificate_authority_key = KeyPair::try_from(certificate_authority_key)
+        .context("Failed to load the Web certificate authority key")?;
+    let certificate_authority = certificate_authority_params()
+        .self_signed(&certificate_authority_key)
+        .context("Failed to reconstruct the Web certificate authority")?;
+    let leaf_key = KeyPair::generate().context("Failed to generate the Web server key")?;
+    let mut params = CertificateParams::new(subject_alt_names.to_vec())
+        .context("Failed to configure Web certificate names")?;
+    let mut distinguished_name = DistinguishedName::new();
+    distinguished_name.push(DnType::CommonName, "subnetdesk.local");
+    params.distinguished_name = distinguished_name;
+    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+    params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+    let certificate = params
+        .signed_by(
+            &leaf_key,
+            &certificate_authority,
+            &certificate_authority_key,
+        )
+        .context("Failed to sign the Web server certificate")?;
+    Ok((certificate.der().to_vec(), leaf_key.serialize_der()))
+}
+
+fn load_or_generate_certificate_authority() -> ResultType<(Vec<u8>, Vec<u8>)> {
+    let (certificate_path, private_key_path) = certificate_authority_paths();
     match (fs::read(&certificate_path), fs::read(&private_key_path)) {
         (Ok(certificate), Ok(private_key))
-            if !certificate.is_empty() && !private_key.is_empty() =>
+            if !certificate.is_empty()
+                && !private_key.is_empty()
+                && certificate_authority_material_valid(&certificate, &private_key) =>
         {
             secure_private_file_permissions(&private_key_path)?;
             return Ok((certificate, private_key));
         }
         _ => {}
     }
-    let (certificate, mut private_key) = generate_self_signed_certificate()?;
+    let (certificate, mut private_key) = generate_certificate_authority()?;
     if let Err(err) = write_private_file(&private_key_path, &private_key) {
         private_key.zeroize();
         return Err(err);
@@ -399,6 +838,67 @@ fn load_or_generate_certificate() -> ResultType<(Vec<u8>, Vec<u8>)> {
         return Err(err);
     }
     Ok((certificate, private_key))
+}
+
+fn load_generated_certificate_metadata() -> Option<GeneratedCertificateMetadata> {
+    fs::read(certificate_metadata_path())
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+}
+
+fn write_generated_certificate_metadata(metadata: &GeneratedCertificateMetadata) -> ResultType<()> {
+    let bytes =
+        serde_json::to_vec(metadata).context("Failed to encode Web certificate metadata")?;
+    write_private_file(&certificate_metadata_path(), &bytes)
+}
+
+fn load_or_generate_certificate() -> ResultType<(Vec<Vec<u8>>, Vec<u8>)> {
+    let (certificate_authority, mut certificate_authority_key) =
+        load_or_generate_certificate_authority()?;
+    let subject_alt_names = certificate_subject_alt_names();
+    let now = unix_seconds();
+    let metadata = load_generated_certificate_metadata();
+    let (certificate_path, private_key_path) = certificate_paths();
+    let existing = match (fs::read(&certificate_path), fs::read(&private_key_path)) {
+        (Ok(certificate), Ok(private_key))
+            if !certificate.is_empty()
+                && !private_key.is_empty()
+                && metadata
+                    .as_ref()
+                    .map(|metadata| {
+                        !generated_certificate_needs_rotation(metadata, &subject_alt_names, now)
+                    })
+                    .unwrap_or(false) =>
+        {
+            secure_private_file_permissions(&private_key_path)?;
+            Some((certificate, private_key))
+        }
+        _ => None,
+    };
+    let (certificate, private_key) = match existing {
+        Some(existing) => existing,
+        None => {
+            let (certificate, mut private_key) =
+                generate_leaf_certificate(&certificate_authority_key, &subject_alt_names)?;
+            if let Err(err) = write_private_file(&private_key_path, &private_key) {
+                private_key.zeroize();
+                certificate_authority_key.zeroize();
+                return Err(err);
+            }
+            if let Err(err) = write_private_file(&certificate_path, &certificate) {
+                private_key.zeroize();
+                certificate_authority_key.zeroize();
+                return Err(err);
+            }
+            write_generated_certificate_metadata(&GeneratedCertificateMetadata {
+                subject_alt_names,
+                generated_at_unix_seconds: now,
+            })?;
+            (certificate, private_key)
+        }
+    };
+    certificate_authority_key.zeroize();
+    Ok((vec![certificate, certificate_authority], private_key))
 }
 
 async fn load_tls_config() -> ResultType<RustlsConfig> {
@@ -417,8 +917,8 @@ async fn load_tls_config() -> ResultType<RustlsConfig> {
                 )
             });
     }
-    let (certificate, mut private_key) = load_or_generate_certificate()?;
-    let result = RustlsConfig::from_der(vec![certificate], private_key.clone())
+    let (certificates, mut private_key) = load_or_generate_certificate()?;
+    let result = RustlsConfig::from_der(certificates, private_key.clone())
         .await
         .context("Failed to load the Web TLS certificate");
     private_key.zeroize();
@@ -427,17 +927,9 @@ async fn load_tls_config() -> ResultType<RustlsConfig> {
     }
 
     log::warn!("Regenerating an invalid Web TLS certificate");
-    let (certificate, mut private_key) = generate_self_signed_certificate()?;
-    let (certificate_path, private_key_path) = certificate_paths();
-    if let Err(err) = write_private_file(&private_key_path, &private_key) {
-        private_key.zeroize();
-        return Err(err);
-    }
-    if let Err(err) = write_private_file(&certificate_path, &certificate) {
-        private_key.zeroize();
-        return Err(err);
-    }
-    let result = RustlsConfig::from_der(vec![certificate], private_key.clone())
+    let _ = fs::remove_file(certificate_metadata_path());
+    let (certificates, mut private_key) = load_or_generate_certificate()?;
+    let result = RustlsConfig::from_der(certificates, private_key.clone())
         .await
         .context("Failed to load the regenerated Web TLS certificate");
     private_key.zeroize();
@@ -459,8 +951,13 @@ fn ensure_tls_crypto_provider() -> ResultType<()> {
     }
 }
 
-fn configured_addresses() -> ResultType<Vec<IpAddr>> {
-    let values: Vec<_> = Config::get_option("lan-listen-addresses")
+fn configured_address_values(web_value: &str, lan_value: &str) -> ResultType<Vec<IpAddr>> {
+    let selected = if web_value.trim().is_empty() {
+        lan_value
+    } else {
+        web_value
+    };
+    let values: Vec<_> = selected
         .split(',')
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -474,6 +971,73 @@ fn configured_addresses() -> ResultType<Vec<IpAddr>> {
         Ok(vec![IpAddr::V4(Ipv4Addr::UNSPECIFIED)])
     } else {
         Ok(values)
+    }
+}
+
+fn configured_addresses() -> ResultType<Vec<IpAddr>> {
+    configured_address_values(
+        &Config::get_option("web-listen-addresses"),
+        &Config::get_option("lan-listen-addresses"),
+    )
+}
+
+fn configured_network_value(web_value: &str, lan_value: &str) -> String {
+    if web_value.trim().is_empty() {
+        lan_value.trim().to_owned()
+    } else {
+        web_value.trim().to_owned()
+    }
+}
+
+fn web_source_allowed(ip: IpAddr) -> bool {
+    let configured = configured_network_value(
+        &Config::get_option("web-allowed-networks"),
+        &Config::get_option("lan-allowed-networks"),
+    );
+    crate::lan_server::source_allowed_with(ip, &configured)
+}
+
+fn validate_web_network_policy() -> ResultType<()> {
+    let configured = configured_network_value(
+        &Config::get_option("web-allowed-networks"),
+        &Config::get_option("lan-allowed-networks"),
+    );
+    crate::lan_server::normalize_allowed_networks(&configured)
+        .context("Invalid Web allowed network policy")?;
+    Ok(())
+}
+
+fn asset_hash(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn app_javascript_path() -> String {
+    format!("/app.{}.js", &asset_hash(APP_JS)[..16])
+}
+
+fn stylesheet_path() -> String {
+    format!("/style.{}.css", &asset_hash(STYLE_CSS.as_bytes())[..16])
+}
+
+fn video_worker_javascript_path() -> String {
+    format!("/video-worker.{}.js", &asset_hash(VIDEO_WORKER_JS)[..16])
+}
+
+fn cache_control_for_path(path: &str) -> &'static str {
+    let file_name = path.rsplit('/').next().unwrap_or_default();
+    let is_hashed_asset = (file_name.starts_with("app.") && file_name.ends_with(".js"))
+        || (file_name.starts_with("video-worker.") && file_name.ends_with(".js"))
+        || (file_name.starts_with("style.") && file_name.ends_with(".css"));
+    if is_hashed_asset
+        && file_name
+            .split('.')
+            .nth(1)
+            .map(|hash| hash.len() >= 16 && hash.bytes().all(|value| value.is_ascii_hexdigit()))
+            .unwrap_or(false)
+    {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-store"
     }
 }
 
@@ -540,7 +1104,7 @@ async fn redirect_plain_http(
     allowed_hosts: &HashSet<String>,
 ) -> io::Result<()> {
     let remote_addr = stream.peer_addr()?;
-    if !crate::lan_server::source_allowed(remote_addr.ip()) {
+    if !web_source_allowed(remote_addr.ip()) {
         return write_plain_http_response(
             stream,
             b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\nCache-Control: no-store\r\n\r\n",
@@ -622,13 +1186,19 @@ where
 }
 
 fn app(state: WebState) -> Router {
+    let app_path = app_javascript_path();
+    let style_path = stylesheet_path();
+    let worker_path = video_worker_javascript_path();
     Router::new()
         .route("/", get(index))
-        .route("/app.js", get(app_javascript))
-        .route("/style.css", get(stylesheet))
+        .route(&app_path, get(app_javascript))
+        .route(&worker_path, get(video_worker_javascript))
+        .route(&style_path, get(stylesheet))
         .route("/api/info", get(info))
+        .route("/api/ca-certificate", get(ca_certificate))
         .route("/ws", get(websocket_upgrade))
         .fallback(not_found)
+        .layer(CompressionLayer::new().br(true).gzip(true))
         .layer(middleware::from_fn(security_headers))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -638,7 +1208,10 @@ fn app(state: WebState) -> Router {
 }
 
 async fn index() -> Response {
-    ([(CONTENT_TYPE, "text/html; charset=utf-8")], INDEX_HTML).into_response()
+    let html = INDEX_HTML
+        .replace("/app.js", &app_javascript_path())
+        .replace("/style.css", &stylesheet_path());
+    ([(CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response()
 }
 
 async fn app_javascript() -> Response {
@@ -649,8 +1222,41 @@ async fn app_javascript() -> Response {
         .into_response()
 }
 
+async fn video_worker_javascript() -> Response {
+    (
+        [(CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        Body::from(VIDEO_WORKER_JS),
+    )
+        .into_response()
+}
+
 async fn stylesheet() -> Response {
     ([(CONTENT_TYPE, "text/css; charset=utf-8")], STYLE_CSS).into_response()
+}
+
+async fn ca_certificate() -> Response {
+    if !Config::get_option("web-certificate-path").trim().is_empty() {
+        return (StatusCode::NOT_FOUND, "A custom certificate is configured").into_response();
+    }
+    let (certificate_path, _) = certificate_authority_paths();
+    match fs::read(&certificate_path) {
+        Ok(certificate) if !certificate.is_empty() => (
+            [
+                (CONTENT_TYPE, "application/pkix-cert"),
+                (
+                    CONTENT_DISPOSITION,
+                    "attachment; filename=\"subnetdesk-local-ca.der\"",
+                ),
+            ],
+            Body::from(certificate),
+        )
+            .into_response(),
+        _ => (
+            StatusCode::NOT_FOUND,
+            "Certificate authority is unavailable",
+        )
+            .into_response(),
+    }
 }
 
 async fn info(State(state): State<WebState>) -> Response {
@@ -660,6 +1266,20 @@ async fn info(State(state): State<WebState>) -> Response {
         "fingerprint": crate::lan_protocol::fingerprint(&Config::get_key_pair().1),
         "version": crate::VERSION,
         "secure": state.secure,
+        "certificate_mode": if Config::get_option("web-certificate-path").trim().is_empty() {
+            "local-ca"
+        } else {
+            "custom"
+        },
+        "ca_certificate_url": if Config::get_option("web-certificate-path").trim().is_empty() {
+            "/api/ca-certificate"
+        } else {
+            ""
+        },
+        "video_worker_url": video_worker_javascript_path(),
+        "permission_profile": normalized_web_permission_profile(
+            &Config::get_option("web-permission-profile")
+        ),
     }))
     .into_response()
 }
@@ -676,19 +1296,30 @@ async fn restrict_request(
     let source_allowed = request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
-        .map(|connect| crate::lan_server::source_allowed(connect.0.ip()))
+        .map(|connect| web_source_allowed(connect.0.ip()))
         .unwrap_or(false);
+    let source = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|connect| connect.0.ip());
     let authority = request_authority(request.headers(), request.uri()).unwrap_or_default();
     if !source_allowed || !authority_host_allowed(authority, &state.allowed_hosts) {
         return (StatusCode::FORBIDDEN, "Forbidden").into_response();
+    }
+    if !source
+        .map(|source| state.request_budget.lock().unwrap().allow(source))
+        .unwrap_or(false)
+    {
+        return (StatusCode::TOO_MANY_REQUESTS, "Too many requests").into_response();
     }
     next.run(request).await
 }
 
 async fn security_headers(request: Request<Body>, next: Next) -> Response {
+    let cache_control = cache_control_for_path(request.uri().path());
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
-    headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(CACHE_CONTROL, HeaderValue::from_static(cache_control));
     headers.insert(
         "content-security-policy",
         HeaderValue::from_static(CONTENT_SECURITY_POLICY),
@@ -717,35 +1348,55 @@ async fn websocket_upgrade(
 ) -> Response {
     let authority = request_authority(&headers, &uri).unwrap_or_default();
     let origin = headers.get(ORIGIN).and_then(|value| value.to_str().ok());
-    if !crate::lan_server::source_allowed(remote_addr.ip())
+    if !web_source_allowed(remote_addr.ip())
         || !authority_host_allowed(authority, &state.allowed_hosts)
         || !origin_allowed(origin, authority, state.secure)
     {
         return (StatusCode::FORBIDDEN, "Forbidden").into_response();
     }
+    let permit = match state.connection_limiter.try_acquire(remote_addr.ip()) {
+        Ok(permit) => permit,
+        Err(_) => return (StatusCode::TOO_MANY_REQUESTS, "Too many Web sessions").into_response(),
+    };
     websocket
         .max_frame_size(MAX_WEBSOCKET_PAYLOAD_LEN)
         .max_message_size(MAX_WEBSOCKET_PAYLOAD_LEN)
-        .on_upgrade(move |socket| bridge_websocket(socket, state.server, remote_addr))
+        .on_upgrade(move |socket| bridge_websocket(socket, state.server, remote_addr, permit))
 }
 
-async fn bridge_websocket(mut socket: WebSocket, server: ServerPtr, remote_addr: SocketAddr) {
+async fn bridge_websocket(
+    mut socket: WebSocket,
+    server: ServerPtr,
+    remote_addr: SocketAddr,
+    _permit: ConnectionPermit,
+) {
     let (server_stream, bridge_stream) = duplex(4 * 1024 * 1024);
     let local_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), configured_port());
     let stream = Stream::from_framed(tcp::FramedStream::from(server_stream, local_addr));
-    let server_task = tokio::spawn(async move {
-        if let Err(err) = crate::server::create_lan_connection(server, stream, remote_addr).await {
+    let mut server_task = tokio::spawn(async move {
+        if let Err(err) =
+            crate::server::create_lan_connection(server, stream, remote_addr, true).await
+        {
             log::warn!("Web LAN connection from {remote_addr} failed: {err}");
         }
     });
     let mut framed = Framed::new(bridge_stream, BytesCodec::new());
+    let idle_timeout = tokio::time::sleep(WEB_SOCKET_IDLE_TIMEOUT);
+    tokio::pin!(idle_timeout);
 
     loop {
         tokio::select! {
+            _ = &mut idle_timeout => {
+                log::debug!("Closing idle Web session from {remote_addr}");
+                break;
+            }
             incoming = socket.recv() => {
+                idle_timeout.as_mut().reset(tokio::time::Instant::now() + WEB_SOCKET_IDLE_TIMEOUT);
                 match incoming {
                     Some(Ok(WebSocketMessage::Binary(bytes))) => {
-                        if validate_websocket_payload_len(bytes.len()).is_err() {
+                        if validate_websocket_payload_len(bytes.len()).is_err()
+                            || bytes.len() > MAX_WEBSOCKET_CLIENT_PAYLOAD_LEN
+                        {
                             break;
                         }
                         if let Err(err) = framed.send(Bytes::from(bytes)).await {
@@ -763,6 +1414,7 @@ async fn bridge_websocket(mut socket: WebSocket, server: ServerPtr, remote_addr:
                 }
             }
             outgoing = framed.next() => {
+                idle_timeout.as_mut().reset(tokio::time::Instant::now() + WEB_SOCKET_IDLE_TIMEOUT);
                 match outgoing {
                     Some(Ok(bytes)) => {
                         if validate_websocket_payload_len(bytes.len()).is_err() {
@@ -783,8 +1435,13 @@ async fn bridge_websocket(mut socket: WebSocket, server: ServerPtr, remote_addr:
     }
     drop(framed);
     drop(socket);
-    if let Err(err) = server_task.await {
-        log::debug!("Web connection task ended unexpectedly: {err}");
+    match timeout(WEB_SOCKET_SHUTDOWN_TIMEOUT, &mut server_task).await {
+        Ok(Err(err)) => log::debug!("Web connection task ended unexpectedly: {err}"),
+        Ok(Ok(())) => {}
+        Err(_) => {
+            server_task.abort();
+            let _ = server_task.await;
+        }
     }
 }
 
@@ -801,8 +1458,11 @@ pub async fn bind(
     stop_rx: watch::Receiver<bool>,
 ) -> ResultType<Vec<tokio::task::JoinHandle<()>>> {
     if !is_enabled() {
+        let _ = write_runtime_status("disabled", &[], "");
         return Ok(Vec::new());
     }
+    let _ = write_runtime_status("starting", &[], "");
+    validate_web_network_policy()?;
     let port = configured_port();
     let native_port = Config::get_option("lan-listen-port")
         .parse::<u16>()
@@ -812,23 +1472,47 @@ pub async fn bind(
     if port == native_port {
         bail!("Web listen port must differ from the native LAN port");
     }
+    let addresses = configured_addresses()?;
+    let allowed_hosts = allowed_hosts()?;
     let tls_config = load_tls_config().await?;
     let mut listeners = Vec::new();
-    for address in configured_addresses()? {
+    for address in addresses {
         let socket_addr = SocketAddr::new(address, port);
         let listener = std::net::TcpListener::bind(socket_addr)
             .with_context(|| format!("Failed to bind Web access on {socket_addr}"))?;
         listener.set_nonblocking(true)?;
         listeners.push((socket_addr, listener));
     }
+    let mut endpoint_hosts = allowed_hosts.iter().cloned().collect::<Vec<_>>();
+    endpoint_hosts.sort();
+    let endpoints = endpoint_hosts
+        .into_iter()
+        .filter(|host| host != "localhost")
+        .map(|host| {
+            let host = if host.contains(':') {
+                format!("[{host}]")
+            } else {
+                host
+            };
+            format!("https://{host}:{port}")
+        })
+        .collect::<Vec<_>>();
+    write_runtime_status("listening", &endpoints, "")?;
 
-    let mut handles = Vec::with_capacity(listeners.len());
-    let allowed_hosts = allowed_hosts();
+    let mut handles = Vec::with_capacity(listeners.len() + 1);
+    let connection_limiter =
+        ConnectionLimiter::new(MAX_WEB_CONNECTIONS, MAX_WEB_CONNECTIONS_PER_SOURCE);
+    let request_budget = Arc::new(Mutex::new(RequestRateBudget::new(
+        MAX_WEB_REQUESTS_PER_MINUTE,
+        Duration::from_secs(60),
+    )));
     for (socket_addr, listener) in listeners {
         let state = WebState {
             server: server.clone(),
             secure: true,
             allowed_hosts: allowed_hosts.clone(),
+            connection_limiter: connection_limiter.clone(),
+            request_budget: request_budget.clone(),
         };
         let router = app(state);
         let handle = Handle::new();
@@ -859,12 +1543,33 @@ pub async fn bind(
         });
         handles.push(task);
     }
+    let mut heartbeat_stop_rx = stop_rx.clone();
+    let heartbeat_endpoints = endpoints.clone();
+    handles.push(tokio::spawn(async move {
+        let mut interval = tokio::time::interval(WEB_RUNTIME_HEARTBEAT_INTERVAL);
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    if let Err(err) = write_runtime_status("listening", &heartbeat_endpoints, "") {
+                        log::debug!("Failed to update Web runtime heartbeat: {err}");
+                    }
+                }
+                changed = heartbeat_stop_rx.changed() => {
+                    if changed.is_err() || *heartbeat_stop_rx.borrow() {
+                        let _ = write_runtime_status("stopped", &heartbeat_endpoints, "");
+                        break;
+                    }
+                }
+            }
+        }
+    }));
     Ok(handles)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rcgen::CertifiedKey;
 
     #[test]
     fn web_access_is_opt_in_and_https_is_mandatory() {
@@ -930,6 +1635,142 @@ mod tests {
         assert_eq!(parse_web_port("0"), 18_123);
         assert_eq!(parse_web_port("65536"), 18_123);
         assert_eq!(parse_web_port("19123"), 19_123);
+    }
+
+    #[test]
+    fn web_network_settings_override_lan_fallbacks() {
+        assert_eq!(
+            configured_address_values("127.0.0.1,::1", "0.0.0.0").unwrap(),
+            vec![
+                "127.0.0.1".parse::<IpAddr>().unwrap(),
+                "::1".parse::<IpAddr>().unwrap()
+            ]
+        );
+        assert_eq!(
+            configured_address_values("", "192.168.1.20").unwrap(),
+            vec!["192.168.1.20".parse::<IpAddr>().unwrap()]
+        );
+        assert_eq!(
+            configured_network_value("10.8.0.0/24", "192.168.0.0/16"),
+            "10.8.0.0/24"
+        );
+        assert_eq!(
+            configured_network_value("", "192.168.0.0/16"),
+            "192.168.0.0/16"
+        );
+    }
+
+    #[test]
+    fn explicit_web_hosts_replace_implicit_interface_hosts() {
+        let hosts = configured_allowed_hosts(
+            "Desk.Example.LAN, [fd00::20],desk.example.lan",
+            vec!["192.168.1.20".to_owned()],
+        )
+        .unwrap();
+        assert!(hosts.contains("desk.example.lan"));
+        assert!(hosts.contains("fd00::20"));
+        assert!(!hosts.contains("192.168.1.20"));
+        assert_eq!(
+            configured_allowed_hosts("", vec!["192.168.1.20".to_owned()]).unwrap(),
+            HashSet::from(["192.168.1.20".to_owned()])
+        );
+        assert!(configured_allowed_hosts("user@desk.example", Vec::new()).is_err());
+    }
+
+    #[test]
+    fn generated_certificate_rotates_when_addresses_change_or_it_ages() {
+        let metadata = GeneratedCertificateMetadata {
+            subject_alt_names: vec!["192.168.1.20".to_owned(), "subnetdesk.local".to_owned()],
+            generated_at_unix_seconds: 1_000,
+        };
+        assert!(!generated_certificate_needs_rotation(
+            &metadata,
+            &["192.168.1.20".to_owned(), "subnetdesk.local".to_owned()],
+            1_000 + GENERATED_CERTIFICATE_ROTATION_SECONDS - 1,
+        ));
+        assert!(generated_certificate_needs_rotation(
+            &metadata,
+            &["192.168.1.21".to_owned(), "subnetdesk.local".to_owned()],
+            1_001,
+        ));
+        assert!(generated_certificate_needs_rotation(
+            &metadata,
+            &["192.168.1.20".to_owned(), "subnetdesk.local".to_owned()],
+            1_000 + GENERATED_CERTIFICATE_ROTATION_SECONDS,
+        ));
+    }
+
+    #[test]
+    fn generated_certificate_authority_requires_a_matching_private_key() {
+        let (certificate, private_key) = generate_certificate_authority().unwrap();
+        let (_, other_private_key) = generate_certificate_authority().unwrap();
+        assert!(certificate_authority_material_valid(
+            &certificate,
+            &private_key
+        ));
+        assert!(!certificate_authority_material_valid(
+            &certificate,
+            &other_private_key
+        ));
+    }
+
+    #[test]
+    fn certificate_dns_names_support_exact_and_single_label_wildcards() {
+        assert!(dns_name_matches("desk.example.lan", "desk.example.lan"));
+        assert!(dns_name_matches("*.example.lan", "desk.example.lan"));
+        assert!(!dns_name_matches("*.example.lan", "deep.desk.example.lan"));
+        assert!(!dns_name_matches("*.example.lan", "example.lan"));
+    }
+
+    #[test]
+    fn static_assets_use_immutable_cache_but_html_and_api_do_not() {
+        assert_eq!(cache_control_for_path("/"), "no-store");
+        assert_eq!(cache_control_for_path("/api/info"), "no-store");
+        assert_eq!(
+            cache_control_for_path("/app.0123456789abcdef.js"),
+            "public, max-age=31536000, immutable"
+        );
+        assert_eq!(
+            cache_control_for_path("/style.0123456789abcdef.css"),
+            "public, max-age=31536000, immutable"
+        );
+        assert_eq!(
+            cache_control_for_path("/video-worker.0123456789abcdef.js"),
+            "public, max-age=31536000, immutable"
+        );
+    }
+
+    #[test]
+    fn websocket_connection_budget_limits_each_source_and_recovers_on_drop() {
+        let limiter = ConnectionLimiter::new(3, 2);
+        let source: IpAddr = "192.168.1.20".parse().unwrap();
+        let first = limiter.try_acquire(source).unwrap();
+        let second = limiter.try_acquire(source).unwrap();
+        assert!(matches!(
+            limiter.try_acquire(source),
+            Err(ConnectionLimitError::Source)
+        ));
+        drop(first);
+        assert!(limiter.try_acquire(source).is_ok());
+        drop(second);
+    }
+
+    #[test]
+    fn request_rate_budget_rejects_bursts_until_the_window_resets() {
+        let mut budget = RequestRateBudget::new(2, Duration::from_secs(60));
+        let source: IpAddr = "192.168.1.20".parse().unwrap();
+        let start = std::time::Instant::now();
+        assert!(budget.allow_at(source, start));
+        assert!(budget.allow_at(source, start));
+        assert!(!budget.allow_at(source, start));
+        assert!(budget.allow_at(source, start + Duration::from_secs(61)));
+    }
+
+    #[test]
+    fn persisted_runtime_status_expires_without_a_heartbeat() {
+        assert!(runtime_status_is_fresh(100, 104));
+        assert!(!runtime_status_is_fresh(100, 106));
+        assert!(!runtime_status_is_fresh(200, 100));
     }
 
     #[test]
@@ -1030,15 +1871,23 @@ mod tests {
     #[tokio::test]
     async fn generated_certificate_can_configure_the_https_server() {
         ensure_tls_crypto_provider().unwrap();
-        let (certificate, mut private_key) = generate_self_signed_certificate().unwrap();
+        let (certificate_authority, mut certificate_authority_key) =
+            generate_certificate_authority().unwrap();
+        let (certificate, mut private_key) =
+            generate_leaf_certificate(&certificate_authority_key, &["localhost".to_owned()])
+                .unwrap();
+        assert!(!certificate_authority.is_empty());
+        assert!(!certificate_authority_key.is_empty());
         assert!(!certificate.is_empty());
         assert!(!private_key.is_empty());
-        assert!(
-            RustlsConfig::from_der(vec![certificate], private_key.clone())
-                .await
-                .is_ok()
-        );
+        assert!(RustlsConfig::from_der(
+            vec![certificate, certificate_authority],
+            private_key.clone()
+        )
+        .await
+        .is_ok());
         private_key.zeroize();
+        certificate_authority_key.zeroize();
     }
 
     #[tokio::test]

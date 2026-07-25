@@ -77,7 +77,9 @@ pub type Childs = Arc<Mutex<Vec<std::process::Child>>>;
 type ConnMap = HashMap<i32, ConnInner>;
 
 #[derive(Clone, Default)]
-pub struct ConnectionMeta;
+pub struct ConnectionMeta {
+    pub web_client: bool,
+}
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 const CONFIG_SYNC_INTERVAL_SECS: f32 = 0.3;
@@ -161,6 +163,7 @@ pub async fn create_lan_connection(
     server: ServerPtr,
     mut stream: Stream,
     addr: SocketAddr,
+    web_client: bool,
 ) -> ResultType<()> {
     crate::lan_protocol::server_handshake(&mut stream).await?;
     #[cfg(target_os = "macos")]
@@ -180,7 +183,7 @@ pub async fn create_lan_connection(
         stream,
         id,
         Arc::downgrade(&server),
-        ConnectionMeta::default(),
+        ConnectionMeta { web_client },
     )
     .await;
     Ok(())

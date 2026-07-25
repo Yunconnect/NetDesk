@@ -132,7 +132,24 @@ fn listen_addresses() -> Vec<String> {
         .collect()
 }
 
-fn listener_signature() -> (u16, Vec<String>, String, String, String, String, String) {
+fn listener_signature() -> (
+    u16,
+    Vec<String>,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    Vec<String>,
+    String,
+) {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let web_certificate_addresses = crate::web_gateway::certificate_address_signature();
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let web_certificate_addresses = Vec::new();
     (
         listen_port(),
         listen_addresses(),
@@ -141,6 +158,11 @@ fn listener_signature() -> (u16, Vec<String>, String, String, String, String, St
         Config::get_option("web-listen-port"),
         Config::get_option("web-certificate-path"),
         Config::get_option("web-private-key-path"),
+        Config::get_option("web-listen-addresses"),
+        Config::get_option("web-allowed-networks"),
+        Config::get_option("web-allowed-hosts"),
+        web_certificate_addresses,
+        Config::get_option("web-permission-profile"),
     )
 }
 
@@ -168,6 +190,7 @@ async fn bind_listeners(
         Ok(handles) => handles,
         Err(err) => {
             log::error!("Failed to start optional Web access: {err}");
+            crate::web_gateway::record_start_failure(&err.to_string());
             Vec::new()
         }
     };
@@ -207,7 +230,7 @@ async fn bind_listeners(
                                 let server = server.clone();
                                 tokio::spawn(async move {
                                     let stream = Stream::from(stream, local_addr);
-                                    if let Err(err) = crate::server::create_lan_connection(server, stream, addr).await {
+                                    if let Err(err) = crate::server::create_lan_connection(server, stream, addr, false).await {
                                         log::warn!("LAN connection from {addr} failed: {err}");
                                     }
                                 });
@@ -230,7 +253,7 @@ pub fn source_allowed(ip: IpAddr) -> bool {
     source_allowed_with(ip, &configured)
 }
 
-fn source_allowed_with(ip: IpAddr, configured: &str) -> bool {
+pub(crate) fn source_allowed_with(ip: IpAddr, configured: &str) -> bool {
     let ip = normalize_source_ip(ip);
     let networks: Vec<&str> = if configured.trim().is_empty() {
         vec![

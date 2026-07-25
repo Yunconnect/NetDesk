@@ -60,7 +60,8 @@ class _LanServerInfoPanelState extends State<LanServerInfoPanel> {
     final bytes = parsed.rawAddress;
     if (parsed.type == InternetAddressType.IPv4) {
       if (bytes[0] == 169 && bytes[1] == 254) return 3;
-      final isPrivate = bytes[0] == 10 ||
+      final isPrivate =
+          bytes[0] == 10 ||
           (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31) ||
           (bytes[0] == 192 && bytes[1] == 168);
       return isPrivate ? 0 : 2;
@@ -106,43 +107,65 @@ class _LanServerInfoPanelState extends State<LanServerInfoPanel> {
       running: running,
     );
     final statusLabel = switch (displayStatus) {
-      LanServerDisplayStatus.authenticationRequired =>
-        translate('Authentication Required'),
+      LanServerDisplayStatus.authenticationRequired => translate(
+        'Authentication Required',
+      ),
       LanServerDisplayStatus.ready => translate('Ready'),
-      LanServerDisplayStatus.serviceStopped =>
-        translate('Service is not running'),
+      LanServerDisplayStatus.serviceStopped => translate(
+        'Service is not running',
+      ),
     };
-    final addresses = (info['addresses'] as List<dynamic>? ?? const [])
-        .map((value) => value.toString())
-        .toSet()
-        .toList()
-      ..sort((a, b) {
-        final priority = _addressPriority(a).compareTo(_addressPriority(b));
-        return priority == 0 ? a.compareTo(b) : priority;
-      });
+    final addresses =
+        (info['addresses'] as List<dynamic>? ?? const [])
+            .map((value) => value.toString())
+            .toSet()
+            .toList()
+          ..sort((a, b) {
+            final priority = _addressPriority(a).compareTo(_addressPriority(b));
+            return priority == 0 ? a.compareTo(b) : priority;
+          });
     final port = info['port']?.toString() ?? '21118';
-    final preferredAddresses =
-        addresses.where((address) => _addressPriority(address) < 3).toList();
+    final preferredAddresses = addresses
+        .where((address) => _addressPriority(address) < 3)
+        .toList();
     final primaryAddress = preferredAddresses.isNotEmpty
         ? preferredAddresses.first
         : addresses.isEmpty
-            ? null
-            : addresses.first;
-    final hiddenAddressCount =
-        primaryAddress == null ? 0 : addresses.length - 1;
+        ? null
+        : addresses.first;
+    final hiddenAddressCount = primaryAddress == null
+        ? 0
+        : addresses.length - 1;
     final visibleAddresses = _showAllAddresses
         ? addresses
         : primaryAddress == null
-            ? const <String>[]
-            : <String>[primaryAddress];
+        ? const <String>[]
+        : <String>[primaryAddress];
     final endpoints = visibleAddresses
         .map((address) => _formatEndpoint(address, port))
         .join('\n');
     final webAccessEnabled = info['web_access_enabled'] == true;
     final webPort = info['web_listen_port']?.toString() ?? '18123';
-    final webEndpoints = visibleAddresses
+    final webRuntime =
+        info['web_runtime'] as Map<String, dynamic>? ?? <String, dynamic>{};
+    final webRuntimeState =
+        webRuntime['state']?.toString() ??
+        (webAccessEnabled ? 'starting' : 'disabled');
+    final webRuntimeError = webRuntime['last_error']?.toString() ?? '';
+    final webCaCertificatePath =
+        info['web_ca_certificate_path']?.toString() ?? '';
+    final runtimeEndpoints =
+        (webRuntime['endpoints'] as List<dynamic>? ?? const <dynamic>[])
+            .map((value) => value.toString())
+            .where((value) => value.isNotEmpty)
+            .toList();
+    final configuredWebEndpoints = visibleAddresses
         .map((address) => 'https://${_formatEndpoint(address, webPort)}')
-        .join('\n');
+        .toList();
+    final webEndpointValues = runtimeEndpoints.isNotEmpty
+        ? runtimeEndpoints
+        : configuredWebEndpoints;
+    final webEndpoints = webEndpointValues.join('\n');
     final fingerprint = info['fingerprint']?.toString() ?? '';
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final muted = isDark ? Colors.white54 : const Color(0xFF7A8290);
@@ -286,11 +309,8 @@ class _LanServerInfoPanelState extends State<LanServerInfoPanel> {
                 muted: muted,
                 trailing: hiddenAddressCount > 0
                     ? TextButton(
-                        onPressed: () => _showAddressList(
-                          context,
-                          addresses,
-                          port,
-                        ),
+                        onPressed: () =>
+                            _showAddressList(context, addresses, port),
                         style: TextButton.styleFrom(
                           padding: const EdgeInsets.symmetric(horizontal: 5),
                           minimumSize: const Size(0, 26),
@@ -307,9 +327,9 @@ class _LanServerInfoPanelState extends State<LanServerInfoPanel> {
                 _buildCompactInfoRow(
                   icon: Icons.language_rounded,
                   label: 'Web remote access',
-                  value: primaryAddress == null
-                      ? '-'
-                      : 'https://${_formatEndpoint(primaryAddress, webPort)}',
+                  value: webEndpointValues.isEmpty
+                      ? webRuntimeState.toUpperCase()
+                      : '${webRuntimeState.toUpperCase()} · ${webEndpointValues.first}',
                   muted: muted,
                 ),
             ],
@@ -378,14 +398,14 @@ class _LanServerInfoPanelState extends State<LanServerInfoPanel> {
               ],
             ),
             const SizedBox(height: 14),
-            Text(translate('Name'),
-                style: TextStyle(fontSize: 12, color: muted)),
+            Text(
+              translate('Name'),
+              style: TextStyle(fontSize: 12, color: muted),
+            ),
             Row(
               children: [
                 Expanded(
-                  child: SelectableText(
-                    info['device_name']?.toString() ?? '-',
-                  ),
+                  child: SelectableText(info['device_name']?.toString() ?? '-'),
                 ),
                 IconButton(
                   tooltip: translate('Change'),
@@ -420,12 +440,60 @@ class _LanServerInfoPanelState extends State<LanServerInfoPanel> {
               ),
               const SizedBox(height: 3),
               SelectableText(webEndpoints.isEmpty ? '-' : webEndpoints),
+              const SizedBox(height: 5),
+              Text(
+                webRuntimeError.isNotEmpty
+                    ? webRuntimeError
+                    : webRuntimeState.toUpperCase(),
+                style: TextStyle(
+                  fontSize: 11,
+                  color: webRuntimeState == 'listening'
+                      ? const Color(0xFF27B980)
+                      : webRuntimeState == 'failed' ||
+                            webRuntimeState == 'stale'
+                      ? Theme.of(context).colorScheme.error
+                      : muted,
+                ),
+              ),
+              if (webRuntimeState == 'listening' &&
+                  runtimeEndpoints.isNotEmpty)
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    TextButton.icon(
+                      onPressed: () => launchUrl(
+                          Uri.parse(runtimeEndpoints.first),
+                        mode: LaunchMode.externalApplication,
+                      ),
+                      icon: const Icon(Icons.open_in_browser_rounded, size: 16),
+                      label: Text(translate('Open')),
+                    ),
+                    TextButton.icon(
+                      onPressed: () {
+                        Clipboard.setData(
+                          ClipboardData(text: runtimeEndpoints.first),
+                        );
+                        showToast(translate('Copied'));
+                      },
+                      icon: const Icon(Icons.copy_outlined, size: 16),
+                      label: Text(translate('Copy')),
+                    ),
+                  ],
+                ),
+              if (webCaCertificatePath.isNotEmpty)
+                TextButton.icon(
+                  onPressed: () => launchUrl(
+                    Uri.file(webCaCertificatePath),
+                    mode: LaunchMode.externalApplication,
+                  ),
+                  icon: const Icon(Icons.verified_user_outlined, size: 16),
+                  label: const Text('Install local CA'),
+                ),
             ],
             if (hiddenAddressCount > 0)
               TextButton.icon(
-                onPressed: () => setState(
-                  () => _showAllAddresses = !_showAllAddresses,
-                ),
+                onPressed: () =>
+                    setState(() => _showAllAddresses = !_showAllAddresses),
                 icon: Icon(
                   _showAllAddresses
                       ? Icons.keyboard_arrow_up
@@ -704,6 +772,24 @@ Future<void> showLanSettingsDialog(
   final webPrivateKeyPath = TextEditingController(
     text: info['web_private_key_path']?.toString() ?? '',
   );
+  final webListenAddresses = TextEditingController(
+    text: info['web_listen_addresses']?.toString() ?? '',
+  );
+  final webAllowedNetworks = TextEditingController(
+    text: info['web_allowed_networks']?.toString() ?? '',
+  );
+  final webAllowedHosts = TextEditingController(
+    text: info['web_allowed_hosts']?.toString() ?? '',
+  );
+  var webPermissionProfile =
+      info['web_permission_profile']?.toString() ?? 'control';
+  if (!const {
+    'view-only',
+    'control',
+    'collaboration',
+  }.contains(webPermissionProfile)) {
+    webPermissionProfile = 'control';
+  }
   var discoveryEnabled = info['discovery_enabled'] == true;
   var webAccessEnabled = info['web_access_enabled'] == true;
   var error = '';
@@ -717,8 +803,9 @@ Future<void> showLanSettingsDialog(
         final isDark = Theme.of(context).brightness == Brightness.dark;
         final primary = Theme.of(context).colorScheme.primary;
         final muted = isDark ? Colors.white60 : const Color(0xFF737B8C);
-        final fieldFill =
-            isDark ? const Color(0xFF292C33) : const Color(0xFFF7F9FC);
+        final fieldFill = isDark
+            ? const Color(0xFF292C33)
+            : const Color(0xFFF7F9FC);
         final border = isDark ? Colors.white12 : const Color(0xFFE1E6EE);
 
         InputDecoration fieldDecoration({
@@ -734,8 +821,11 @@ Future<void> showLanSettingsDialog(
                 ? null
                 : Tooltip(
                     message: help,
-                    child: Icon(Icons.info_outline_rounded,
-                        size: 17, color: muted),
+                    child: Icon(
+                      Icons.info_outline_rounded,
+                      size: 17,
+                      color: muted,
+                    ),
                   ),
             filled: true,
             fillColor: fieldFill,
@@ -856,61 +946,62 @@ Future<void> showLanSettingsDialog(
                     ),
                     const SizedBox(height: 22),
                     responsiveFields([
-                        Expanded(
-                          child: TextField(
-                            controller: username,
-                            autocorrect: false,
-                            decoration: fieldDecoration(
-                              label: translate('Username'),
-                              icon: Icons.person_outline_rounded,
-                            ),
+                      Expanded(
+                        child: TextField(
+                          controller: username,
+                          autocorrect: false,
+                          decoration: fieldDecoration(
+                            label: translate('Username'),
+                            icon: Icons.person_outline_rounded,
                           ),
                         ),
-                        if (useDesktopLayout) const SizedBox(width: 12),
-                        Expanded(
-                          child: TextField(
-                            controller: password,
-                            obscureText: true,
-                            autocorrect: false,
-                            enableSuggestions: false,
-                            decoration: fieldDecoration(
-                              label: translate('Password'),
-                              icon: Icons.lock_outline_rounded,
-                              help: info['configured'] == true
-                                  ? translate(
-                                      'Leave blank to keep current password')
-                                  : null,
-                            ),
+                      ),
+                      if (useDesktopLayout) const SizedBox(width: 12),
+                      Expanded(
+                        child: TextField(
+                          controller: password,
+                          obscureText: true,
+                          autocorrect: false,
+                          enableSuggestions: false,
+                          decoration: fieldDecoration(
+                            label: translate('Password'),
+                            icon: Icons.lock_outline_rounded,
+                            help: info['configured'] == true
+                                ? translate(
+                                    'Leave blank to keep current password',
+                                  )
+                                : null,
                           ),
                         ),
-                      ]),
+                      ),
+                    ]),
                     const SizedBox(height: 14),
                     responsiveFields([
-                        Expanded(
-                          child: TextField(
-                            controller: listenAddresses,
-                            decoration: fieldDecoration(
-                              label: translate('Local Address'),
-                              icon: Icons.lan_outlined,
-                              help: translate(
-                                'Comma-separated IP addresses; blank listens on all interfaces',
-                              ),
+                      Expanded(
+                        child: TextField(
+                          controller: listenAddresses,
+                          decoration: fieldDecoration(
+                            label: translate('Local Address'),
+                            icon: Icons.lan_outlined,
+                            help: translate(
+                              'Comma-separated IP addresses; blank listens on all interfaces',
                             ),
                           ),
                         ),
-                        if (useDesktopLayout) const SizedBox(width: 12),
-                        SizedBox(
-                          width: useDesktopLayout ? 140 : double.maxFinite,
-                          child: TextField(
-                            controller: listenPort,
-                            keyboardType: TextInputType.number,
-                            decoration: fieldDecoration(
-                              label: translate('Port'),
-                              icon: Icons.tag_rounded,
-                            ),
+                      ),
+                      if (useDesktopLayout) const SizedBox(width: 12),
+                      SizedBox(
+                        width: useDesktopLayout ? 140 : double.maxFinite,
+                        child: TextField(
+                          controller: listenPort,
+                          keyboardType: TextInputType.number,
+                          decoration: fieldDecoration(
+                            label: translate('Port'),
+                            icon: Icons.tag_rounded,
                           ),
                         ),
-                      ]),
+                      ),
+                    ]),
                     const SizedBox(height: 14),
                     TextField(
                       controller: allowedNetworks,
@@ -947,9 +1038,8 @@ Future<void> showLanSettingsDialog(
                           ),
                           Switch(
                             value: discoveryEnabled,
-                            onChanged: (value) => setDialogState(
-                              () => discoveryEnabled = value,
-                            ),
+                            onChanged: (value) =>
+                                setDialogState(() => discoveryEnabled = value),
                           ),
                         ],
                       ),
@@ -966,8 +1056,11 @@ Future<void> showLanSettingsDialog(
                         children: [
                           Row(
                             children: [
-                              Icon(Icons.language_rounded,
-                                  size: 20, color: primary),
+                              Icon(
+                                Icons.language_rounded,
+                                size: 20,
+                                color: primary,
+                              ),
                               const SizedBox(width: 10),
                               const Expanded(
                                 child: Column(
@@ -1011,12 +1104,69 @@ Future<void> showLanSettingsDialog(
                             ),
                             const SizedBox(height: 10),
                             TextField(
+                              controller: webListenAddresses,
+                              decoration: fieldDecoration(
+                                label: 'Web listen addresses',
+                                icon: Icons.dns_outlined,
+                                help:
+                                    'Comma-separated IP addresses. Blank falls back to the native LAN listener.',
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                            TextField(
+                              controller: webAllowedNetworks,
+                              decoration: fieldDecoration(
+                                label: 'Web allowed networks',
+                                icon: Icons.security_rounded,
+                                help:
+                                    'Comma-separated CIDR ranges. Blank falls back to the native LAN policy.',
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                            TextField(
+                              controller: webAllowedHosts,
+                              decoration: fieldDecoration(
+                                label: 'Web allowed host names',
+                                icon: Icons.language_outlined,
+                                help:
+                                    'Comma-separated DNS names or IP addresses. When set, every other Host header is rejected.',
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                            DropdownButtonFormField<String>(
+                              initialValue: webPermissionProfile,
+                              decoration: fieldDecoration(
+                                label: 'Browser permission profile',
+                                icon: Icons.policy_outlined,
+                                help:
+                                    'Browser sessions never receive file, restart, privacy-mode, or terminal privileges.',
+                              ),
+                              items: const [
+                                DropdownMenuItem(
+                                  value: 'view-only',
+                                  child: Text('View only'),
+                                ),
+                                DropdownMenuItem(
+                                  value: 'control',
+                                  child: Text('Keyboard and pointer control'),
+                                ),
+                                DropdownMenuItem(
+                                  value: 'collaboration',
+                                  child: Text('Control and text clipboard'),
+                                ),
+                              ],
+                              onChanged: (value) => setDialogState(
+                                () => webPermissionProfile = value ?? 'control',
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                            TextField(
                               controller: webCertificatePath,
                               decoration: fieldDecoration(
                                 label: 'Custom certificate chain (PEM)',
                                 icon: Icons.verified_user_outlined,
                                 help:
-                                    'Optional absolute path. Leave both certificate fields empty to use the generated self-signed certificate.',
+                                    'Optional absolute path. Leave both certificate fields empty to use the generated local CA and rotating server certificate.',
                               ),
                             ),
                             const SizedBox(height: 10),
@@ -1054,10 +1204,9 @@ Future<void> showLanSettingsDialog(
                         width: double.infinity,
                         padding: const EdgeInsets.all(10),
                         decoration: BoxDecoration(
-                          color: Theme.of(context)
-                              .colorScheme
-                              .error
-                              .withOpacity(0.08),
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.error.withOpacity(0.08),
                           borderRadius: BorderRadius.circular(8),
                         ),
                         child: Text(
@@ -1073,69 +1222,129 @@ Future<void> showLanSettingsDialog(
                     Divider(height: 1, color: border),
                     const SizedBox(height: 16),
                     responsiveActions([
-                        TextButton(
-                          onPressed: () => Navigator.of(dialogContext).pop(),
-                          child: Text(translate('Cancel')),
-                        ),
-                        if (useDesktopLayout) const SizedBox(width: 10),
-                        ElevatedButton.icon(
-                          onPressed: saving
-                              ? null
-                              : () async {
+                      TextButton(
+                        onPressed: () => Navigator.of(dialogContext).pop(),
+                        child: Text(translate('Cancel')),
+                      ),
+                      if (useDesktopLayout) const SizedBox(width: 10),
+                      ElevatedButton.icon(
+                        onPressed: saving
+                            ? null
+                            : () async {
+                                setDialogState(() {
+                                  saving = true;
+                                  error = '';
+                                });
+                                if (webCertificatePath.text.trim().isNotEmpty &&
+                                    webAllowedHosts.text.trim().isEmpty) {
                                   setDialogState(() {
-                                    saving = true;
-                                    error = '';
+                                    saving = false;
+                                    error =
+                                        'Web allowed host names are required with a custom certificate';
                                   });
-                                  final result =
-                                      await bind.mainApplyLanSettings(
-                                    username: username.text,
-                                    password: password.text,
-                                    listenAddresses: listenAddresses.text,
-                                    listenPort: listenPort.text,
-                                    allowedNetworks: allowedNetworks.text,
-                                    discoveryEnabled: discoveryEnabled,
-                                    webAccessEnabled: webAccessEnabled,
-                                    webListenPort: webListenPort.text,
-                                    webCertificatePath:
-                                        webCertificatePath.text,
-                                    webPrivateKeyPath:
-                                        webPrivateKeyPath.text,
-                                  );
-                                  password.clear();
-                                  if (!dialogContext.mounted) return;
-                                  if (result.isEmpty) {
-                                    Navigator.of(dialogContext).pop();
-                                    onSaved?.call();
-                                  } else {
-                                    setDialogState(() {
-                                      saving = false;
-                                      error = result;
-                                    });
+                                  return;
+                                }
+                                await bind.mainSetOptions(
+                                  json: jsonEncode(<String, String>{
+                                    'web-listen-addresses': webListenAddresses
+                                        .text
+                                        .trim(),
+                                    'web-allowed-networks': webAllowedNetworks
+                                        .text
+                                        .trim(),
+                                    'web-allowed-hosts': webAllowedHosts.text
+                                        .trim(),
+                                    'web-permission-profile':
+                                        webPermissionProfile,
+                                  }),
+                                );
+                                var result = await bind.mainApplyLanSettings(
+                                  username: username.text,
+                                  password: password.text,
+                                  listenAddresses: listenAddresses.text,
+                                  listenPort: listenPort.text,
+                                  allowedNetworks: allowedNetworks.text,
+                                  discoveryEnabled: discoveryEnabled,
+                                  webAccessEnabled: webAccessEnabled,
+                                  webListenPort: webListenPort.text,
+                                  webCertificatePath: webCertificatePath.text,
+                                  webPrivateKeyPath: webPrivateKeyPath.text,
+                                );
+                                if (result.isEmpty && webAccessEnabled) {
+                                  var runtimeState = '';
+                                  for (
+                                    var attempt = 0;
+                                    attempt < 25;
+                                    attempt++
+                                  ) {
+                                    await Future<void>.delayed(
+                                      const Duration(milliseconds: 200),
+                                    );
+                                    try {
+                                      final currentInfo =
+                                          jsonDecode(
+                                                bind.mainGetLanServerInfoSync(),
+                                              )
+                                              as Map<String, dynamic>;
+                                      final runtime =
+                                          currentInfo['web_runtime']
+                                              as Map<String, dynamic>?;
+                                      runtimeState =
+                                          runtime?['state']?.toString() ?? '';
+                                      if (runtimeState == 'listening') break;
+                                      if (runtimeState == 'failed' ||
+                                          runtimeState == 'stale') {
+                                        result =
+                                            runtime?['last_error']
+                                                ?.toString() ??
+                                            'Web gateway failed to start';
+                                        break;
+                                      }
+                                    } catch (_) {
+                                      // The host may still be replacing its
+                                      // runtime status file atomically.
+                                    }
                                   }
-                                },
-                          icon: saving
-                              ? const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Icon(Icons.check_rounded, size: 18),
-                          label: Text(translate('Save')),
-                          style: ElevatedButton.styleFrom(
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 18,
-                              vertical: 13,
-                            ),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(9),
-                            ),
+                                  if (result.isEmpty &&
+                                      runtimeState != 'listening') {
+                                    result =
+                                        'Web gateway did not reach the listening state within 5 seconds';
+                                  }
+                                }
+                                password.clear();
+                                if (!dialogContext.mounted) return;
+                                if (result.isEmpty) {
+                                  Navigator.of(dialogContext).pop();
+                                  onSaved?.call();
+                                } else {
+                                  setDialogState(() {
+                                    saving = false;
+                                    error = result;
+                                  });
+                                }
+                              },
+                        icon: saving
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.check_rounded, size: 18),
+                        label: Text(translate('Save')),
+                        style: ElevatedButton.styleFrom(
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 18,
+                            vertical: 13,
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(9),
                           ),
                         ),
-                      ],
-                    ),
+                      ),
+                    ]),
                   ],
                 ),
               ),
@@ -1154,6 +1363,9 @@ Future<void> showLanSettingsDialog(
   webListenPort.dispose();
   webCertificatePath.dispose();
   webPrivateKeyPath.dispose();
+  webListenAddresses.dispose();
+  webAllowedNetworks.dispose();
+  webAllowedHosts.dispose();
 }
 
 class _DesktopHomePageState extends State<DesktopHomePage>
@@ -1189,9 +1401,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
           children: [
             _buildNavigationSidebar(context),
             const VerticalDivider(width: 1, thickness: 1),
-            Expanded(
-              child: ConnectionPage(selectedPeerTab: _selectedPeerTab),
-            ),
+            Expanded(child: ConnectionPage(selectedPeerTab: _selectedPeerTab)),
           ],
         ),
       );
@@ -1211,8 +1421,9 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   Widget _buildNavigationSidebar(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final muted = isDark ? Colors.white60 : const Color(0xFF6F7786);
-    final panelColor =
-        isDark ? const Color(0xFF1E2026) : const Color(0xFFFBFCFE);
+    final panelColor = isDark
+        ? const Color(0xFF1E2026)
+        : const Color(0xFFFBFCFE);
     final setupIssues = _setupReadinessIssues;
     return Container(
       width: 280,
@@ -1312,10 +1523,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                   if (setupIssues.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
-                      child: _buildSetupReadinessCard(
-                        context,
-                        setupIssues,
-                      ),
+                      child: _buildSetupReadinessCard(context, setupIssues),
                     ),
                   if (!bind.isOutgoingOnly())
                     const Padding(
@@ -1376,7 +1584,8 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         canMonitorInput: !isMac || bind.mainIsCanInputMonitoring(prompt: false),
         daemonInstalled: !isMac || bind.mainIsInstalledDaemon(prompt: false),
         selinuxEnforcing: isLinuxPlatform && bind.isSelinuxEnforcing(),
-        showSelinuxWarning: !isLinuxPlatform ||
+        showSelinuxWarning:
+            !isLinuxPlatform ||
             bind.mainGetLocalOption(key: _showSelinuxHelpTipOption) != 'N',
         currentSessionWayland: isLinuxPlatform && bind.mainCurrentIsWayland(),
         loginSessionWayland: isLinuxPlatform && bind.mainIsLoginWayland(),
@@ -1501,10 +1710,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
 
   Future<void> _dismissSetupIssue(SetupReadinessIssue issue) async {
     if (issue != SetupReadinessIssue.selinux) return;
-    await bind.mainSetLocalOption(
-      key: _showSelinuxHelpTipOption,
-      value: 'N',
-    );
+    await bind.mainSetLocalOption(key: _showSelinuxHelpTipOption, value: 'N');
     if (mounted) setState(() {});
   }
 
@@ -1596,8 +1802,10 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                     ),
                   ),
                   Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 7,
+                      vertical: 3,
+                    ),
                     decoration: BoxDecoration(
                       color: warningColor.withOpacity(0.13),
                       borderRadius: BorderRadius.circular(10),
@@ -1625,11 +1833,9 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    color: Theme.of(context)
-                        .textTheme
-                        .bodyMedium
-                        ?.color
-                        ?.withOpacity(0.72),
+                    color: Theme.of(
+                      context,
+                    ).textTheme.bodyMedium?.color?.withOpacity(0.72),
                     fontSize: 11,
                     height: 1.35,
                   ),
@@ -1724,8 +1930,9 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                     if (index != issues.length - 1)
                       Divider(
                         height: 1,
-                        color:
-                            isDark ? Colors.white10 : const Color(0xFFE8ECF2),
+                        color: isDark
+                            ? Colors.white10
+                            : const Color(0xFFE8ECF2),
                       ),
                   ],
                 ],
@@ -1783,11 +1990,9 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                 Text(
                   _setupIssueDescription(issue),
                   style: TextStyle(
-                    color: Theme.of(dialogContext)
-                        .textTheme
-                        .bodyMedium
-                        ?.color
-                        ?.withOpacity(0.65),
+                    color: Theme.of(
+                      dialogContext,
+                    ).textTheme.bodyMedium?.color?.withOpacity(0.65),
                     fontSize: 12,
                     height: 1.4,
                   ),
@@ -1842,7 +2047,8 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         borderRadius: BorderRadius.circular(10),
         child: InkWell(
           borderRadius: BorderRadius.circular(10),
-          onTap: onTap ??
+          onTap:
+              onTap ??
               () {
                 if (tab != null) {
                   setState(() => _selectedPeerTab = tab);
@@ -1853,9 +2059,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
             height: 46,
             decoration: selected
                 ? BoxDecoration(
-                    border: Border(
-                      left: BorderSide(color: primary, width: 3),
-                    ),
+                    border: Border(left: BorderSide(color: primary, width: 3)),
                   )
                 : null,
             padding: const EdgeInsets.symmetric(horizontal: 14),
@@ -2221,7 +2425,8 @@ class _DesktopHomePageState extends State<DesktopHomePage>
             child: Column(
               mainAxisAlignment: MainAxisAlignment.start,
               crossAxisAlignment: CrossAxisAlignment.start,
-              children: (title.isNotEmpty
+              children:
+                  (title.isNotEmpty
                       ? <Widget>[
                           Center(
                             child: Text(
@@ -2362,20 +2567,20 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     rustDeskWinManager.registerActiveWindowListener(onActiveWindowChanged);
 
     screenToMap(window_size.Screen screen) => {
-          'frame': {
-            'l': screen.frame.left,
-            't': screen.frame.top,
-            'r': screen.frame.right,
-            'b': screen.frame.bottom,
-          },
-          'visibleFrame': {
-            'l': screen.visibleFrame.left,
-            't': screen.visibleFrame.top,
-            'r': screen.visibleFrame.right,
-            'b': screen.visibleFrame.bottom,
-          },
-          'scaleFactor': screen.scaleFactor,
-        };
+      'frame': {
+        'l': screen.frame.left,
+        't': screen.frame.top,
+        'r': screen.frame.right,
+        'b': screen.frame.bottom,
+      },
+      'visibleFrame': {
+        'l': screen.visibleFrame.left,
+        't': screen.visibleFrame.top,
+        'r': screen.visibleFrame.right,
+        'b': screen.visibleFrame.bottom,
+      },
+      'scaleFactor': screen.scaleFactor,
+    };
 
     bool isChattyMethod(String methodName) {
       switch (methodName) {
@@ -2388,9 +2593,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
 
     rustDeskWinManager.setMethodHandler((call, fromWindowId) async {
       if (!isChattyMethod(call.method)) {
-        debugPrint(
-          "[Main] call ${call.method} from window $fromWindowId",
-        );
+        debugPrint("[Main] call ${call.method} from window $fromWindowId");
       }
       if (call.method == kWindowMainWindowOnTop) {
         windowOnTop(null);

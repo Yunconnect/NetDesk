@@ -973,6 +973,10 @@ pub fn main_set_option(key: String, mut value: String) {
             | "web-listen-port"
             | "web-certificate-path"
             | "web-private-key-path"
+            | "web-listen-addresses"
+            | "web-allowed-networks"
+            | "web-allowed-hosts"
+            | "web-permission-profile"
             | "stop-service"
     );
     set_option(key, value);
@@ -1598,12 +1602,24 @@ pub fn main_get_lan_server_info_sync() -> SyncReturn<String> {
         .filter(|value| *value > 0)
         .unwrap_or(hbb_common::lan::DEFAULT_PORT);
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    let (web_listen_port, web_https_enabled) = (
+    let (web_listen_port, web_https_enabled, web_runtime, web_ca_certificate_path) = (
         crate::web_gateway::configured_port(),
         crate::web_gateway::is_https_enabled(),
+        serde_json::to_value(crate::web_gateway::runtime_status()).unwrap_or_default(),
+        crate::web_gateway::certificate_authority_path_for_ui(),
     );
     #[cfg(any(target_os = "android", target_os = "ios"))]
-    let (web_listen_port, web_https_enabled) = (18_123, true);
+    let (web_listen_port, web_https_enabled, web_runtime, web_ca_certificate_path) = (
+        18_123,
+        true,
+        serde_json::json!({
+            "state": "unsupported",
+            "endpoints": [],
+            "last_error": "",
+            "active_sessions": 0,
+        }),
+        String::new(),
+    );
     let data = serde_json::json!({
         "configured": configured,
         "running": running,
@@ -1622,6 +1638,12 @@ pub fn main_get_lan_server_info_sync() -> SyncReturn<String> {
         "web_https_enabled": web_https_enabled,
         "web_certificate_path": Config::get_option("web-certificate-path"),
         "web_private_key_path": Config::get_option("web-private-key-path"),
+        "web_listen_addresses": Config::get_option("web-listen-addresses"),
+        "web_allowed_networks": Config::get_option("web-allowed-networks"),
+        "web_allowed_hosts": Config::get_option("web-allowed-hosts"),
+        "web_permission_profile": Config::get_option("web-permission-profile"),
+        "web_ca_certificate_path": web_ca_certificate_path,
+        "web_runtime": web_runtime,
     });
     SyncReturn(data.to_string())
 }
