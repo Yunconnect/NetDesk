@@ -34,11 +34,13 @@ jobs:
         run: |
           grep -Fq 'upload-artifact: true' .github/workflows/flutter-ci.yml
           grep -Fq 'publish-release: false' .github/workflows/flutter-ci.yml
-          grep -Fq 'publish-release: true' .github/workflows/flutter-ci.yml
-          grep -Fq 'upload-tag: "nightly"' .github/workflows/flutter-ci.yml
           grep -Fq 'build-mobile: false' .github/workflows/flutter-ci.yml
           grep -Fq 'publish-release: true' .github/workflows/flutter-tag.yml
           grep -Fq 'publish-release: true' .github/workflows/flutter-nightly.yml
+          grep -Fq 'branches:' .github/workflows/flutter-nightly.yml
+          grep -Fq '      - master' .github/workflows/flutter-nightly.yml
+          grep -Fq 'Delete all existing nightly assets' .github/workflows/flutter-nightly.yml
+          grep -Fq 'publish-download-table:' .github/workflows/flutter-build.yml
           grep -Fq 'flutter build linux --release --target-platform linux-arm64' .github/workflows/flutter-build.yml
           grep -Fq 'dartsdk-linux-arm64-release.zip' .github/workflows/flutter-build.yml
           grep -Fq 'rm -f flutter/bin/cache/flutter_tools.snapshot flutter/bin/cache/flutter_tools.stamp' .github/workflows/flutter-build.yml
