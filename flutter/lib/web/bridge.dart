@@ -145,6 +145,23 @@ class RustdeskImpl {
         ]));
   }
 
+  String sessionLoginLan(
+      {required UuidValue sessionId,
+      required String username,
+      required String password,
+      required bool remember,
+      dynamic hint}) {
+    return 'LAN access credentials are not supported in the web client';
+  }
+
+  String sessionLoginLanIdentity(
+      {required UuidValue sessionId,
+      required String identityId,
+      required bool bindOnSuccess,
+      dynamic hint}) {
+    return 'LAN identities are not supported in the web client';
+  }
+
   Future<void> sessionSend2Fa(
       {required UuidValue sessionId,
       required String code,
@@ -839,6 +856,69 @@ class RustdeskImpl {
 
   Future<String> mainGetLanPeers({dynamic hint}) {
     throw UnimplementedError("mainGetLanPeers");
+  }
+
+  String mainListLanIdentities({dynamic hint}) {
+    return '[]';
+  }
+
+  String mainCreateLanIdentity(
+      {required String name,
+      required String username,
+      required String password,
+      required bool makeDefault,
+      dynamic hint}) {
+    return jsonEncode({
+      'identity_id': '',
+      'error': 'LAN identities are not supported in the web client',
+    });
+  }
+
+  String mainUpdateLanIdentity(
+      {required String identityId,
+      required String name,
+      required String username,
+      required String password,
+      required bool makeDefault,
+      dynamic hint}) {
+    return 'LAN identities are not supported in the web client';
+  }
+
+  String mainDeleteLanIdentity({required String identityId, dynamic hint}) {
+    return 'LAN identities are not supported in the web client';
+  }
+
+  String mainSetDefaultLanIdentity(
+      {required String identityId, dynamic hint}) {
+    return 'LAN identities are not supported in the web client';
+  }
+
+  String mainBindLanIdentity(
+      {required String fingerprint,
+      required String identityId,
+      dynamic hint}) {
+    return 'LAN identities are not supported in the web client';
+  }
+
+  String mainGetBoundLanIdentityId(
+      {required String fingerprint, dynamic hint}) {
+    return '';
+  }
+
+  bool mainHasLegacyLanCredential(
+      {required String fingerprint, dynamic hint}) {
+    return false;
+  }
+
+  String mainImportLegacyLanCredential(
+      {required String fingerprint,
+      required String name,
+      required bool makeDefault,
+      dynamic hint}) {
+    return jsonEncode({
+      'identity_id': '',
+      'error': 'LAN identities are not supported in the web client',
+    });
   }
 
   Future<String> mainGetConnectStatus({dynamic hint}) {

@@ -15,7 +15,7 @@ use magnum_opus::{Channels::*, Decoder as AudioDecoder};
 use ringbuf::{ring_buffer::RbBase, Rb};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ffi::c_void,
     net::SocketAddr,
     ops::Deref,
@@ -111,6 +111,73 @@ const LAN_CREDENTIAL_USERNAME_OPTION: &str = "lan-access-username";
 const LAN_CREDENTIAL_KEYRING_SERVICE: &str = "com.zibochen.SubnetDesk.LANCredentials";
 pub const LOGIN_MSG_OFFLINE: &str = "Offline";
 pub const LOGIN_SCREEN_WAYLAND: &str = "Wayland login screen is not supported";
+
+fn lan_credential_config_id_for_fingerprint(fingerprint: &str) -> Option<String> {
+    if fingerprint.len() != 64 || !fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        None
+    } else {
+        Some(format!(
+            "{LAN_CREDENTIAL_CONFIG_PREFIX}{}",
+            fingerprint.to_ascii_lowercase()
+        ))
+    }
+}
+
+pub(crate) fn load_remembered_lan_credential_for_fingerprint(
+    fingerprint: &str,
+) -> Option<(String, Vec<u8>)> {
+    let config_id = lan_credential_config_id_for_fingerprint(fingerprint)?;
+    let config = PeerConfig::load(&config_id);
+    let username = config
+        .options
+        .get(LAN_CREDENTIAL_USERNAME_OPTION)
+        .cloned()?;
+    if hbb_common::lan::validate_username(&username).is_err() {
+        return None;
+    }
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    {
+        let entry = match keyring::Entry::new(LAN_CREDENTIAL_KEYRING_SERVICE, &config_id) {
+            Ok(entry) => entry,
+            Err(err) => {
+                log::warn!("Failed to open the operating system credential store: {err}");
+                return None;
+            }
+        };
+        let mut password = match entry.get_password() {
+            Ok(password) => password,
+            Err(keyring::Error::NoEntry) => return None,
+            Err(err) => {
+                log::warn!("Failed to read the remembered LAN credential: {err}");
+                return None;
+            }
+        };
+        if hbb_common::lan::validate_password(password.as_bytes()).is_err() {
+            password.zeroize();
+            return None;
+        }
+        let password_bytes = password.as_bytes().to_vec();
+        password.zeroize();
+        Some((username, password_bytes))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        None
+    }
+}
+
+pub(crate) fn clear_remembered_lan_credential_for_fingerprint(fingerprint: &str) {
+    if let Some(config_id) = lan_credential_config_id_for_fingerprint(fingerprint) {
+        #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+        match keyring::Entry::new(LAN_CREDENTIAL_KEYRING_SERVICE, &config_id)
+            .and_then(|entry| entry.delete_password())
+        {
+            Ok(()) | Err(keyring::Error::NoEntry) => {}
+            Err(err) => log::warn!("Failed to delete the remembered LAN credential: {err}"),
+        }
+        PeerConfig::remove(&config_id);
+    }
+}
 #[cfg(target_os = "linux")]
 pub const SCRAP_UBUNTU_HIGHER_REQUIRED: &str = "ubuntu-21-04-required";
 #[cfg(target_os = "linux")]
@@ -174,13 +241,14 @@ pub fn get_key_state(key: enigo::Key) -> bool {
 
 impl Client {
     const CLIENT_CLIPBOARD_NAME: &'static str = "client-clipboard";
+    const KNOWN_DEVICE_CONNECT_TIMEOUT: u64 = 5_000;
 
     /// Start a new encrypted LAN connection.
     pub async fn start(
         peer: &str,
         _conn_type: ConnType,
         interface: impl Interface,
-    ) -> ResultType<(Stream, Vec<u8>)> {
+    ) -> ResultType<(Stream, Vec<u8>, String)> {
         if config::is_incoming_only() {
             bail!("Incoming only mode");
         }
@@ -194,17 +262,98 @@ impl Client {
         interface.update_direct(Some(true));
         interface.update_received(false);
 
-        let endpoint = hbb_common::lan::Endpoint::parse(peer)?;
-        let mut stream = connect_tcp_local(endpoint.authority(), None, CONNECT_TIMEOUT)
-            .await
-            .with_context(|| format!("Failed to connect to {endpoint}"))?;
-        let identity = crate::lan_protocol::client_handshake(&mut stream).await?;
-        log::info!(
-            "Established encrypted LAN connection to {} with fingerprint {}",
-            endpoint,
-            identity.fingerprint
-        );
-        Ok((stream, identity.device_public_key))
+        let requested = hbb_common::lan::Endpoint::parse(peer)?
+            .authority()
+            .to_owned();
+        let (expected_fingerprint, mut candidates) = crate::lan::connection_candidates(&requested);
+        let mut discovery = expected_fingerprint.as_ref().map(|_| {
+            tokio::spawn(async {
+                if let Err(err) = crate::lan::discover_async().await {
+                    log::debug!("LAN discovery during connection fallback failed: {err}");
+                }
+            })
+        });
+        let mut attempted = HashSet::new();
+        let mut errors = Vec::new();
+
+        loop {
+            for candidate in std::mem::take(&mut candidates) {
+                if !attempted.insert(candidate.clone()) {
+                    continue;
+                }
+                let timeout = if expected_fingerprint.is_some() {
+                    Self::KNOWN_DEVICE_CONNECT_TIMEOUT
+                } else {
+                    CONNECT_TIMEOUT
+                };
+                let endpoint = match hbb_common::lan::Endpoint::parse(&candidate) {
+                    Ok(endpoint) => endpoint,
+                    Err(err) => {
+                        errors.push(format!("{candidate}: {err}"));
+                        continue;
+                    }
+                };
+                let mut stream = match connect_tcp_local(endpoint.authority(), None, timeout).await
+                {
+                    Ok(stream) => stream,
+                    Err(err) => {
+                        errors.push(format!("{endpoint}: {err}"));
+                        continue;
+                    }
+                };
+                let identity = match crate::lan_protocol::client_handshake(&mut stream).await {
+                    Ok(identity) => identity,
+                    Err(err) => {
+                        errors.push(format!("{endpoint}: {err}"));
+                        continue;
+                    }
+                };
+                if let Some(expected) = expected_fingerprint.as_ref() {
+                    if !identity.fingerprint.eq_ignore_ascii_case(expected) {
+                        log::warn!(
+                            "Ignoring LAN endpoint {} because it belongs to fingerprint {}, expected {}",
+                            endpoint,
+                            identity.fingerprint,
+                            expected
+                        );
+                        errors.push(format!("{endpoint}: device identity did not match"));
+                        continue;
+                    }
+                }
+
+                let connected_endpoint = endpoint.authority().to_owned();
+                interface.get_lch().write().unwrap().lan_connected_endpoint =
+                    connected_endpoint.clone();
+                log::info!(
+                    "Established encrypted LAN connection to {} with fingerprint {}",
+                    endpoint,
+                    identity.fingerprint
+                );
+                return Ok((stream, identity.device_public_key, connected_endpoint));
+            }
+
+            if let Some(discovery) = discovery.take() {
+                if let Err(err) = discovery.await {
+                    log::debug!("LAN discovery fallback task failed: {err}");
+                }
+                let (_, refreshed) = crate::lan::connection_candidates(&requested);
+                candidates = refreshed;
+                if candidates
+                    .iter()
+                    .all(|candidate| attempted.contains(candidate))
+                {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        let detail = errors
+            .last()
+            .cloned()
+            .unwrap_or_else(|| "no usable LAN endpoint was found".to_owned());
+        bail!("Failed to connect to {requested}: {detail}")
     }
 
     #[inline]
@@ -984,6 +1133,7 @@ pub struct LoginConfigHandler {
     pub peer_info: Option<PeerInfo>,
     pub lan_access_username: String,
     pub lan_fingerprint: String,
+    pub lan_connected_endpoint: String,
     pub record_state: bool,
     pub record_permission: bool,
 }
@@ -1026,6 +1176,7 @@ impl LoginConfigHandler {
         self.adapter_luid = adapter_luid;
         self.selected_windows_session_id = None;
         self.lan_fingerprint.clear();
+        self.lan_connected_endpoint.clear();
         self.record_state = false;
         self.record_permission = true;
 
@@ -1065,55 +1216,11 @@ impl LoginConfigHandler {
     }
 
     fn lan_credential_config_id(&self) -> Option<String> {
-        if self.lan_fingerprint.is_empty() {
-            None
-        } else {
-            Some(format!(
-                "{LAN_CREDENTIAL_CONFIG_PREFIX}{}",
-                self.lan_fingerprint
-            ))
-        }
+        lan_credential_config_id_for_fingerprint(&self.lan_fingerprint)
     }
 
     pub fn load_remembered_lan_credential(&self) -> Option<(String, Vec<u8>)> {
-        let config_id = self.lan_credential_config_id()?;
-        let config = PeerConfig::load(&config_id);
-        let username = config
-            .options
-            .get(LAN_CREDENTIAL_USERNAME_OPTION)
-            .cloned()?;
-        if hbb_common::lan::validate_username(&username).is_err() {
-            return None;
-        }
-        #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-        {
-            let entry = match keyring::Entry::new(LAN_CREDENTIAL_KEYRING_SERVICE, &config_id) {
-                Ok(entry) => entry,
-                Err(err) => {
-                    log::warn!("Failed to open the operating system credential store: {err}");
-                    return None;
-                }
-            };
-            let mut password = match entry.get_password() {
-                Ok(password) => password,
-                Err(keyring::Error::NoEntry) => return None,
-                Err(err) => {
-                    log::warn!("Failed to read the remembered LAN credential: {err}");
-                    return None;
-                }
-            };
-            if hbb_common::lan::validate_password(password.as_bytes()).is_err() {
-                password.zeroize();
-                return None;
-            }
-            let password_bytes = password.as_bytes().to_vec();
-            password.zeroize();
-            Some((username, password_bytes))
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-        {
-            None
-        }
+        load_remembered_lan_credential_for_fingerprint(&self.lan_fingerprint)
     }
 
     pub fn save_remembered_lan_credential(
@@ -1152,16 +1259,7 @@ impl LoginConfigHandler {
     }
 
     pub fn clear_remembered_lan_credential(&self) {
-        if let Some(config_id) = self.lan_credential_config_id() {
-            #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-            match keyring::Entry::new(LAN_CREDENTIAL_KEYRING_SERVICE, &config_id)
-                .and_then(|entry| entry.delete_password())
-            {
-                Ok(()) | Err(keyring::Error::NoEntry) => {}
-                Err(err) => log::warn!("Failed to delete the remembered LAN credential: {err}"),
-            }
-            PeerConfig::remove(&config_id);
-        }
+        clear_remembered_lan_credential_for_fingerprint(&self.lan_fingerprint);
     }
 
     /// Set an option for handler's [`PeerConfig`].
@@ -1790,9 +1888,35 @@ impl LoginConfigHandler {
         }
         // no matter if change, for update file time
         self.save_config(config);
+        let connected_endpoint = if self.lan_connected_endpoint.is_empty() {
+            self.id.clone()
+        } else {
+            self.lan_connected_endpoint.clone()
+        };
+        if connected_endpoint != self.id && !self.lan_fingerprint.is_empty() {
+            self.config.store(&connected_endpoint);
+            let mut changed = false;
+            let mut seen = HashSet::new();
+            let favorites = LocalConfig::get_fav()
+                .into_iter()
+                .filter_map(|favorite| {
+                    let favorite = if favorite == self.id {
+                        changed = true;
+                        connected_endpoint.clone()
+                    } else {
+                        favorite
+                    };
+                    seen.insert(favorite.clone()).then_some(favorite)
+                })
+                .collect::<Vec<_>>();
+            if changed {
+                LocalConfig::set_fav(favorites);
+            }
+            LocalConfig::set_remote_id(&connected_endpoint);
+        }
         if !self.lan_fingerprint.is_empty() && !self.lan_access_username.is_empty() {
             if let Err(err) = LocalConfig::record_recent_lan_endpoint(
-                &self.id,
+                &connected_endpoint,
                 &self.lan_access_username,
                 &pi.hostname,
                 &pi.platform,

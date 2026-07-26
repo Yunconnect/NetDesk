@@ -16,7 +16,7 @@ use hbb_common::{
 };
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs, UdpSocket},
     time::Instant,
 };
@@ -121,8 +121,7 @@ pub(super) fn start_listening() -> ResultType<()> {
     }
 }
 
-#[tokio::main(flavor = "current_thread")]
-pub async fn discover() -> ResultType<()> {
+pub(crate) async fn discover_async() -> ResultType<()> {
     let (tx, rx) = unbounded_channel::<_>();
     let mut worker_started = false;
     match send_query() {
@@ -145,6 +144,86 @@ pub async fn discover() -> ResultType<()> {
 
     log::info!("discover ping done");
     Ok(())
+}
+
+#[tokio::main(flavor = "current_thread")]
+pub async fn discover() -> ResultType<()> {
+    discover_async().await
+}
+
+pub(crate) fn connection_candidates(endpoint: &str) -> (Option<String>, Vec<String>) {
+    let recent = config::LocalConfig::get_recent_lan_endpoints();
+    let peers = config::LanPeers::load().peers;
+    connection_candidates_from(endpoint, &recent, &peers)
+}
+
+fn connection_candidates_from(
+    endpoint: &str,
+    recent: &[config::RecentLanEndpoint],
+    peers: &[config::DiscoveryPeer],
+) -> (Option<String>, Vec<String>) {
+    let Ok(requested) = hbb_common::lan::Endpoint::parse(endpoint) else {
+        return (None, vec![endpoint.to_owned()]);
+    };
+    let requested = requested.authority().to_owned();
+    let mut fingerprint = recent
+        .iter()
+        .find(|recent| recent.endpoint == requested)
+        .map(|recent| recent.fingerprint.to_ascii_lowercase());
+
+    if fingerprint.is_none() {
+        fingerprint = peers.iter().find_map(|peer| {
+            if peer.endpoint == requested {
+                return Some(peer.fingerprint.to_ascii_lowercase());
+            }
+            let requested_endpoint = hbb_common::lan::Endpoint::parse(&requested).ok()?;
+            if peer.ip_mac.contains_key(requested_endpoint.host()) {
+                Some(peer.fingerprint.to_ascii_lowercase())
+            } else {
+                None
+            }
+        });
+    }
+    let fingerprint = fingerprint
+        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()));
+
+    let mut candidates = Vec::new();
+    push_unique(&mut candidates, requested);
+    if let Some(fingerprint) = fingerprint.as_ref() {
+        for recent in recent
+            .iter()
+            .filter(|recent| recent.fingerprint.eq_ignore_ascii_case(fingerprint))
+        {
+            push_unique(&mut candidates, recent.endpoint.clone());
+        }
+        for peer in peers
+            .iter()
+            .filter(|peer| peer.fingerprint.eq_ignore_ascii_case(fingerprint))
+        {
+            push_unique(&mut candidates, peer.endpoint.clone());
+            let port = hbb_common::lan::Endpoint::parse(&peer.endpoint)
+                .map(|endpoint| endpoint.port())
+                .unwrap_or(hbb_common::lan::DEFAULT_PORT);
+            let mut addresses = peer.ip_mac.keys().collect::<Vec<_>>();
+            addresses.sort();
+            for address in addresses {
+                if let Ok(address) = address.parse::<IpAddr>() {
+                    let endpoint = match address {
+                        IpAddr::V4(address) => format!("{address}:{port}"),
+                        IpAddr::V6(address) => format!("[{address}]:{port}"),
+                    };
+                    push_unique(&mut candidates, endpoint);
+                }
+            }
+        }
+    }
+    (fingerprint, candidates)
+}
+
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if !value.is_empty() && !values.contains(&value) {
+        values.push(value);
+    }
 }
 
 pub fn send_wol(id: String) {
@@ -389,24 +468,21 @@ async fn handle_received_peers(mut rx: UnboundedReceiver<config::DiscoveryPeer>)
         peer.online = false;
     });
 
-    let mut response_set = HashSet::new();
     let mut last_write_time: Option<Instant> = None;
     loop {
         tokio::select! {
             data = rx.recv() => match data {
                 Some(mut peer) => {
-                    let response_key = if peer.fingerprint.is_empty() {
-                        peer.id.clone()
-                    } else {
-                        peer.fingerprint.clone()
-                    };
-                    let in_response_set = !response_set.insert(response_key);
                     if let Some(pos) = peers.iter().position(|x| x.is_same_peer(&peer) ) {
                         let peer1 = peers.remove(pos);
-                        if in_response_set {
-                            peer.ip_mac.extend(peer1.ip_mac);
-                            peer.online = true;
+                        if let Ok(endpoint) = hbb_common::lan::Endpoint::parse(&peer1.endpoint) {
+                            if endpoint.host().parse::<IpAddr>().is_ok() {
+                                peer.ip_mac
+                                    .entry(endpoint.host().to_owned())
+                                    .or_default();
+                            }
                         }
+                        peer.ip_mac.extend(peer1.ip_mac);
                     }
                     peers.insert(0, peer);
                     if last_write_time.map(|t| t.elapsed().as_millis() > 300).unwrap_or(true)  {
@@ -448,5 +524,56 @@ mod tests {
         );
         assert_eq!(select_device_display_name("", "host.local"), "host.local");
         assert_eq!(select_device_display_name("", "\n"), "SubnetDesk");
+    }
+
+    #[test]
+    fn connection_candidates_keep_vpn_endpoint_and_add_discovered_addresses() {
+        let fingerprint = "a".repeat(64);
+        let recent = config::RecentLanEndpoint {
+            endpoint: "10.8.0.15:21118".to_owned(),
+            fingerprint: fingerprint.clone(),
+            ..Default::default()
+        };
+        let peers = vec![config::DiscoveryPeer {
+            endpoint: "192.168.1.99:21118".to_owned(),
+            fingerprint: fingerprint.clone(),
+            ip_mac: HashMap::from([
+                ("192.168.1.99".to_owned(), String::new()),
+                ("10.8.0.15".to_owned(), String::new()),
+            ]),
+            ..Default::default()
+        }];
+
+        let (resolved_fingerprint, candidates) =
+            connection_candidates_from(&recent.endpoint, &[recent.clone()], &peers);
+
+        assert_eq!(resolved_fingerprint, Some(fingerprint));
+        assert_eq!(candidates[0], "10.8.0.15:21118");
+        assert!(candidates.contains(&"192.168.1.99:21118".to_owned()));
+        assert_eq!(
+            candidates
+                .iter()
+                .filter(|endpoint| endpoint.as_str() == "10.8.0.15:21118")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn connection_candidates_can_identify_device_from_discovery_cache() {
+        let fingerprint = "b".repeat(64);
+        let peers = vec![config::DiscoveryPeer {
+            endpoint: "192.168.1.20:21118".to_owned(),
+            fingerprint: fingerprint.clone(),
+            ip_mac: HashMap::from([("10.9.0.20".to_owned(), String::new())]),
+            ..Default::default()
+        }];
+
+        let (resolved_fingerprint, candidates) =
+            connection_candidates_from("10.9.0.20:21118", &[], &peers);
+
+        assert_eq!(resolved_fingerprint, Some(fingerprint));
+        assert_eq!(candidates[0], "10.9.0.20:21118");
+        assert!(candidates.contains(&"192.168.1.20:21118".to_owned()));
     }
 }

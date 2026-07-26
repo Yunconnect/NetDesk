@@ -58,12 +58,21 @@ pub struct LanSessionCredential {
     pub username: String,
     pub password: Vec<u8>,
     pub remember: bool,
+    pub identity_id: String,
+    pub bind_identity_on_success: bool,
+}
+
+#[derive(Clone, Default)]
+pub struct LanIdentityRequest {
+    pub identity_id: String,
+    pub bind_on_success: bool,
 }
 
 #[derive(Clone, Default)]
 pub struct Session<T: InvokeUiSession> {
     pub password: String,
     pub lan_credential: Arc<Mutex<Option<LanSessionCredential>>>,
+    pub lan_identity_request: Arc<Mutex<Option<LanIdentityRequest>>>,
     pub args: Vec<String>,
     pub lc: Arc<RwLock<LoginConfigHandler>>,
     pub sender: Arc<RwLock<Option<mpsc::UnboundedSender<Data>>>>,
@@ -215,10 +224,30 @@ impl<T: InvokeUiSession> Session<T> {
             username: username.clone(),
             password: password.as_bytes().to_vec(),
             remember,
+            identity_id: String::new(),
+            bind_identity_on_success: false,
         };
         password.zeroize();
         self.lc.write().unwrap().lan_access_username = username;
+        *self.lan_identity_request.lock().unwrap() = None;
         *self.lan_credential.lock().unwrap() = Some(credential);
+        self.send(Data::SubmitLanCredentials);
+        Ok(())
+    }
+
+    pub fn submit_lan_identity(
+        &self,
+        identity_id: String,
+        bind_on_success: bool,
+    ) -> hbb_common::ResultType<()> {
+        let identity = hbb_common::config::LocalConfig::get_lan_identity(&identity_id)
+            .ok_or_else(|| hbb_common::anyhow::anyhow!("LAN identity does not exist"))?;
+        self.lc.write().unwrap().lan_access_username = identity.username;
+        *self.lan_credential.lock().unwrap() = None;
+        *self.lan_identity_request.lock().unwrap() = Some(LanIdentityRequest {
+            identity_id,
+            bind_on_success,
+        });
         self.send(Data::SubmitLanCredentials);
         Ok(())
     }
@@ -1772,14 +1801,24 @@ impl<T: InvokeUiSession> Interface for Session<T> {
             );
         }
         self.update_privacy_mode();
-        // Authentication succeeded. Persist or remove the fingerprint-bound LAN
-        // credential only now, never when the user merely submits the dialog.
+        // Authentication succeeded. Persist the selected identity binding or the
+        // legacy fingerprint-bound credential only now, never when the user
+        // merely submits the dialog.
         if let Some(credential) = self.lan_credential.lock().unwrap().take() {
             let lc = self.lc.clone();
             let interface = self.clone();
             let _ = tokio::task::spawn_blocking(move || {
                 let lc = lc.read().unwrap();
-                if credential.remember {
+                if !credential.identity_id.is_empty() {
+                    if credential.bind_identity_on_success {
+                        if let Err(err) =
+                            crate::lan_identity::bind(&lc.lan_fingerprint, &credential.identity_id)
+                        {
+                            log::error!("Failed to bind LAN identity: {err}");
+                            interface.msgbox("error", "Failed", "Bind identity", "");
+                        }
+                    }
+                } else if credential.remember {
                     if let Err(err) = lc
                         .save_remembered_lan_credential(&credential.username, &credential.password)
                     {
@@ -1832,7 +1871,45 @@ impl<T: InvokeUiSession> Interface for Session<T> {
 
     async fn send_initial_lan_login(&self, peer: &mut Stream) {
         let mut credential = self.lan_credential();
+        let mut explicit_identity_requested = false;
         if credential.is_none() {
+            let requested_identity = self.lan_identity_request.lock().unwrap().clone();
+            explicit_identity_requested = requested_identity.is_some();
+            let fingerprint = self.lc.read().unwrap().lan_fingerprint.clone();
+            let identity_result = tokio::task::spawn_blocking(move || {
+                if let Some(request) = requested_identity {
+                    crate::lan_identity::load(&request.identity_id)
+                        .map(|identity| Some((identity, request.bind_on_success)))
+                } else {
+                    crate::lan_identity::load_for_fingerprint(&fingerprint)
+                        .map(|identity| identity.map(|identity| (identity, false)))
+                }
+            })
+            .await;
+            match identity_result {
+                Ok(Ok(Some((identity, bind_identity_on_success)))) => {
+                    let identity_credential = LanSessionCredential {
+                        username: identity.username,
+                        password: identity.password,
+                        remember: false,
+                        identity_id: identity.id,
+                        bind_identity_on_success,
+                    };
+                    self.lc.write().unwrap().lan_access_username =
+                        identity_credential.username.clone();
+                    *self.lan_credential.lock().unwrap() = Some(identity_credential.clone());
+                    credential = Some(identity_credential);
+                }
+                Ok(Ok(None)) => {}
+                Ok(Err(err)) => {
+                    log::warn!("Failed to load LAN identity: {err}");
+                }
+                Err(err) => {
+                    log::warn!("LAN identity credential task failed: {err}");
+                }
+            }
+        }
+        if credential.is_none() && !explicit_identity_requested {
             let lc = self.lc.clone();
             let remembered = match tokio::task::spawn_blocking(move || {
                 lc.read().unwrap().load_remembered_lan_credential()
@@ -1850,6 +1927,8 @@ impl<T: InvokeUiSession> Interface for Session<T> {
                     username,
                     password,
                     remember: true,
+                    identity_id: String::new(),
+                    bind_identity_on_success: false,
                 };
                 self.lc.write().unwrap().lan_access_username = remembered.username.clone();
                 *self.lan_credential.lock().unwrap() = Some(remembered.clone());

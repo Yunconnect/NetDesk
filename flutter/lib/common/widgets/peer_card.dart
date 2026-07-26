@@ -9,14 +9,15 @@ import 'package:provider/provider.dart';
 
 import '../../common.dart';
 import '../../common/formatter/id_formatter.dart';
+import '../../desktop/lan_identity_manager.dart';
 import '../../models/peer_model.dart';
 import '../../models/platform_model.dart';
 import '../../desktop/widgets/material_mod_popup_menu.dart' as mod_menu;
 import '../../desktop/widgets/popup_menu.dart';
 import 'responsive_layout.dart';
 
-typedef PopupMenuEntryBuilder = Future<List<mod_menu.PopupMenuEntry<String>>>
-    Function(BuildContext);
+typedef PopupMenuEntryBuilder =
+    Future<List<mod_menu.PopupMenuEntry<String>>> Function(BuildContext);
 
 enum PeerUiType { grid, tile, list }
 
@@ -103,20 +104,25 @@ class _PeerCardState extends State<_PeerCard>
           ? peer.hostname
           : '${peer.username}${peer.username.isNotEmpty && peer.hostname.isNotEmpty ? '@' : ''}${peer.hostname}';
     }
-    return [peer.platform, formatID(peer.id)]
-        .where((value) => value.isNotEmpty)
-        .join(' · ');
+    return [
+      peer.platform,
+      formatID(peer.id),
+    ].where((value) => value.isNotEmpty).join(' · ');
   }
 
   @override
   Widget build(BuildContext context) {
     super.build(context);
-    return Obx(() => shouldUseCompactPeerLayout(
+    return Obx(
+      () =>
+          shouldUseCompactPeerLayout(
             isMobilePlatform: isMobile,
             isWebMobile: isWeb && !isWebDesktop,
-            isPortrait: stateGlobal.isPortrait.isTrue)
+            isPortrait: stateGlobal.isPortrait.isTrue,
+          )
         ? _buildPortrait()
-        : _buildLandscape());
+          : _buildLandscape(),
+    );
   }
 
   Widget gestureDetector({required Widget child}) {
@@ -365,8 +371,9 @@ class _PeerCardState extends State<_PeerCard>
                               borderRadius: BorderRadius.circular(7),
                               boxShadow: [
                                 BoxShadow(
-                                  color:
-                                      const Color(0xFF1677FF).withOpacity(0.25),
+                                  color: const Color(
+                                    0xFF1677FF,
+                                  ).withOpacity(0.25),
                                   blurRadius: 14,
                                   offset: const Offset(0, 7),
                                 ),
@@ -384,10 +391,7 @@ class _PeerCardState extends State<_PeerCard>
                   Row(
                     children: [
                       getOnline(8, peer.online),
-                      Text(
-                        'LAN',
-                        style: TextStyle(fontSize: 12, color: muted),
-                      ),
+                      Text('LAN', style: TextStyle(fontSize: 12, color: muted)),
                       const Spacer(),
                       IconButton(
                         tooltip: _favorite
@@ -615,8 +619,7 @@ abstract class BasePeerCard extends StatelessWidget {
 
   Future<List<mod_menu.PopupMenuEntry<String>>> _buildPopupMenuEntry(
     BuildContext context,
-  ) async =>
-      (await _buildMenuItems(context))
+  ) async => (await _buildMenuItems(context))
           .map(
             (e) => e.build(
               context,
@@ -673,6 +676,85 @@ abstract class BasePeerCard extends StatelessWidget {
           ? translate('Connect')
           : '${translate('Connect')} ${peer.id}'),
     );
+  }
+
+  Future<List<MenuEntryBase<String>>> _lanIdentityActions(
+    BuildContext context,
+  ) async {
+    if (!isDesktop) return const [];
+    final actions = <MenuEntryBase<String>>[
+      MenuEntryButton<String>(
+        childBuilder: (TextStyle? style) => Text(
+          '${translate('Connect')} · ${translate('Account')}',
+          style: style,
+        ),
+        proc: () {
+          () async {
+            final identityId = await showLanIdentityPicker(
+              context,
+              fingerprint: peer.fingerprint,
+            );
+            if (identityId == null || !context.mounted) return;
+            connectInPeerTab(context, peer, tab, identityId: identityId);
+          }();
+        },
+        padding: menuPadding,
+        dismissOnClicked: true,
+      ),
+    ];
+
+    if (peer.fingerprint.isEmpty) return actions;
+    final boundIdentityId = bind.mainGetBoundLanIdentityId(
+      fingerprint: peer.fingerprint,
+    );
+    if (boundIdentityId.isNotEmpty) {
+      actions.add(
+        MenuEntryButton<String>(
+          childBuilder: (TextStyle? style) => Text(
+            '${translate('Remove')} · ${translate('Account')}',
+            style: style,
+          ),
+          proc: () {
+            final error = bind.mainBindLanIdentity(
+              fingerprint: peer.fingerprint,
+              identityId: '',
+            );
+            showToast(error.isEmpty ? translate('Successful') : error);
+          },
+          padding: menuPadding,
+          dismissOnClicked: true,
+        ),
+      );
+    }
+    if (bind.mainHasLegacyLanCredential(fingerprint: peer.fingerprint)) {
+      actions.add(
+        MenuEntryButton<String>(
+          childBuilder: (TextStyle? style) => Text(
+            '${translate('Add')} · ${translate('Account')}',
+            style: style,
+          ),
+          proc: () {
+            () async {
+              final identityId = await showImportLegacyLanCredentialDialog(
+                context,
+                fingerprint: peer.fingerprint,
+                suggestedName: peer.alias.isNotEmpty
+                    ? peer.alias
+                    : peer.hostname.isNotEmpty
+                    ? peer.hostname
+                    : peer.id,
+              );
+              if (identityId != null) {
+                showToast(translate('Successful'));
+              }
+            }();
+          },
+          padding: menuPadding,
+          dismissOnClicked: true,
+        ),
+      );
+    }
+    return actions;
   }
 
   @protected
@@ -985,6 +1067,7 @@ class RecentPeerCard extends BasePeerCard {
       _viewCameraAction(context),
       _terminalAction(context),
     ];
+    menuItems.addAll(await _lanIdentityActions(context));
 
     if (peer.platform == kPeerPlatformWindows) {
       menuItems.add(_terminalRunAsAdminAction(context));
@@ -1041,6 +1124,7 @@ class FavoritePeerCard extends BasePeerCard {
       _viewCameraAction(context),
       _terminalAction(context),
     ];
+    menuItems.addAll(await _lanIdentityActions(context));
 
     if (peer.platform == kPeerPlatformWindows) {
       menuItems.add(_terminalRunAsAdminAction(context));
@@ -1095,6 +1179,7 @@ class DiscoveredPeerCard extends BasePeerCard {
       _viewCameraAction(context),
       _terminalAction(context),
     ];
+    menuItems.addAll(await _lanIdentityActions(context));
 
     if (peer.platform == kPeerPlatformWindows) {
       menuItems.add(_terminalRunAsAdminAction(context));
@@ -1320,11 +1405,14 @@ void connectInPeerTab(
   bool isTcpTunneling = false,
   bool isRDP = false,
   bool isTerminal = false,
+  String? identityId,
 }) async {
   connect(
     context,
     peer.id,
-    password: '',
+    password: identityId == null
+        ? ''
+        : buildLanIdentityPayload(identityId, bindIdentity: true),
     username: peer.username,
     isFileTransfer: isFileTransfer,
     isTerminal: isTerminal,

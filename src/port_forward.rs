@@ -115,10 +115,17 @@ async fn connect_and_login(
     } else {
         ConnType::PORT_FORWARD
     };
-    let (mut stream, device_public_key) = Client::start(id, conn_type, interface.clone()).await?;
+    let (mut stream, device_public_key, connected_endpoint) =
+        Client::start(id, conn_type, interface.clone()).await?;
     interface.update_direct(Some(true));
     if device_public_key.is_empty()
-        || !crate::client::confirm_lan_device(&interface, ui_receiver, id, &device_public_key).await
+        || !crate::client::confirm_lan_device(
+            &interface,
+            ui_receiver,
+            &connected_endpoint,
+            &device_public_key,
+        )
+        .await
     {
         *close_port_forward = true;
         return Ok(None);

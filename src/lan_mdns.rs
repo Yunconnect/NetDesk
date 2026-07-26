@@ -257,7 +257,16 @@ fn peer_from_mdns_fields(
         .copied()
         .filter(|address| connectable_address(*address))
         .collect::<Vec<_>>();
-    addresses.sort_by_key(|address| (address_priority(*address), *address));
+    let local_ipv4_networks = default_net::get_interfaces()
+        .into_iter()
+        .flat_map(|interface| {
+            interface
+                .ipv4
+                .into_iter()
+                .map(|network| (network.addr, network.netmask))
+        })
+        .collect::<Vec<_>>();
+    addresses.sort_by_key(|address| (address_priority(*address, &local_ipv4_networks), *address));
     addresses.dedup();
     let primary = addresses.first().copied()?;
     let endpoint = match primary {
@@ -307,12 +316,24 @@ fn connectable_address(address: IpAddr) -> bool {
     }
 }
 
-fn address_priority(address: IpAddr) -> u8 {
+fn address_priority(
+    address: IpAddr,
+    local_ipv4_networks: &[(std::net::Ipv4Addr, std::net::Ipv4Addr)],
+) -> u8 {
     match address {
-        IpAddr::V4(address) if address.is_private() => 0,
-        IpAddr::V6(address) if (address.segments()[0] & 0xfe00) == 0xfc00 => 1,
-        IpAddr::V4(_) => 2,
-        IpAddr::V6(_) => 3,
+        IpAddr::V4(address)
+            if address.is_private()
+                && local_ipv4_networks.iter().any(|(local, netmask)| {
+                    (u32::from(*local) & u32::from(*netmask))
+                        == (u32::from(address) & u32::from(*netmask))
+                }) =>
+        {
+            0
+        }
+        IpAddr::V4(address) if address.is_private() => 1,
+        IpAddr::V6(address) if (address.segments()[0] & 0xfe00) == 0xfc00 => 2,
+        IpAddr::V4(_) => 3,
+        IpAddr::V6(_) => 4,
     }
 }
 
@@ -520,5 +541,17 @@ mod tests {
             "fd00::24".parse().unwrap(),
             &configured
         ));
+    }
+
+    #[test]
+    fn same_subnet_address_is_preferred_over_other_private_networks() {
+        let local_networks = [(
+            "192.168.1.10".parse().unwrap(),
+            "255.255.255.0".parse().unwrap(),
+        )];
+        assert!(
+            address_priority("192.168.1.24".parse().unwrap(), &local_networks)
+                < address_priority("10.8.0.24".parse().unwrap(), &local_networks)
+        );
     }
 }

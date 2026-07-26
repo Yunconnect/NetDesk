@@ -169,12 +169,12 @@ impl<T: InvokeUiSession> Remote<T> {
         };
 
         match Client::start(&self.handler.get_id(), conn_type, self.handler.clone()).await {
-            Ok((mut peer, device_public_key)) => {
+            Ok((mut peer, device_public_key, connected_endpoint)) => {
                 if device_public_key.is_empty()
                     || !client::confirm_lan_device(
                         &self.handler,
                         &mut self.receiver,
-                        &self.handler.get_id(),
+                        &connected_endpoint,
                         &device_public_key,
                     )
                     .await
