@@ -254,6 +254,17 @@ pub fn session_login_lan(
     SyncReturn(result.err().map(|err| err.to_string()).unwrap_or_default())
 }
 
+pub fn session_login_lan_identity(
+    session_id: SessionID,
+    identity_id: String,
+    bind_on_success: bool,
+) -> SyncReturn<String> {
+    let result = sessions::get_session_by_session_id(&session_id)
+        .ok_or_else(|| hbb_common::anyhow::anyhow!("Session is no longer available"))
+        .and_then(|session| session.submit_lan_identity(identity_id, bind_on_success));
+    SyncReturn(result.err().map(|err| err.to_string()).unwrap_or_default())
+}
+
 pub fn will_session_close_close_session(session_id: SessionID) -> SyncReturn<bool> {
     SyncReturn(sessions::would_remove_peer_by_session_id(&session_id))
 }
@@ -1032,6 +1043,107 @@ pub fn main_get_peer_sync(id: String) -> SyncReturn<String> {
 
 pub fn main_get_lan_peers() -> String {
     serde_json::to_string(&get_lan_peers()).unwrap_or_default()
+}
+
+pub fn main_list_lan_identities() -> SyncReturn<String> {
+    SyncReturn(serde_json::to_string(&crate::lan_identity::list()).unwrap_or_default())
+}
+
+pub fn main_create_lan_identity(
+    name: String,
+    username: String,
+    mut password: String,
+    make_default: bool,
+) -> SyncReturn<String> {
+    let result = crate::lan_identity::create(&name, &username, &password, make_default);
+    zeroize::Zeroize::zeroize(&mut password);
+    SyncReturn(match result {
+        Ok(identity_id) => serde_json::json!({
+            "identity_id": identity_id,
+            "error": "",
+        })
+        .to_string(),
+        Err(err) => serde_json::json!({
+            "identity_id": "",
+            "error": err.to_string(),
+        })
+        .to_string(),
+    })
+}
+
+pub fn main_update_lan_identity(
+    identity_id: String,
+    name: String,
+    username: String,
+    mut password: String,
+    make_default: bool,
+) -> SyncReturn<String> {
+    let password_update = (!password.is_empty()).then_some(password.as_str());
+    let result = crate::lan_identity::update(
+        &identity_id,
+        &name,
+        &username,
+        password_update,
+        make_default,
+    );
+    zeroize::Zeroize::zeroize(&mut password);
+    SyncReturn(result.err().map(|err| err.to_string()).unwrap_or_default())
+}
+
+pub fn main_delete_lan_identity(identity_id: String) -> SyncReturn<String> {
+    SyncReturn(
+        crate::lan_identity::delete(&identity_id)
+            .err()
+            .map(|err| err.to_string())
+            .unwrap_or_default(),
+    )
+}
+
+pub fn main_set_default_lan_identity(identity_id: String) -> SyncReturn<String> {
+    SyncReturn(
+        crate::lan_identity::set_default(&identity_id)
+            .err()
+            .map(|err| err.to_string())
+            .unwrap_or_default(),
+    )
+}
+
+pub fn main_bind_lan_identity(fingerprint: String, identity_id: String) -> SyncReturn<String> {
+    SyncReturn(
+        crate::lan_identity::bind(&fingerprint, &identity_id)
+            .err()
+            .map(|err| err.to_string())
+            .unwrap_or_default(),
+    )
+}
+
+pub fn main_get_bound_lan_identity_id(fingerprint: String) -> SyncReturn<String> {
+    SyncReturn(crate::lan_identity::bound_identity_id(&fingerprint))
+}
+
+pub fn main_has_legacy_lan_credential(fingerprint: String) -> SyncReturn<bool> {
+    SyncReturn(crate::lan_identity::has_legacy_credential(&fingerprint))
+}
+
+pub fn main_import_legacy_lan_credential(
+    fingerprint: String,
+    name: String,
+    make_default: bool,
+) -> SyncReturn<String> {
+    SyncReturn(
+        match crate::lan_identity::import_legacy_credential(&fingerprint, &name, make_default) {
+            Ok(identity_id) => serde_json::json!({
+                "identity_id": identity_id,
+                "error": "",
+            })
+            .to_string(),
+            Err(err) => serde_json::json!({
+                "identity_id": "",
+                "error": err.to_string(),
+            })
+            .to_string(),
+        },
+    )
 }
 
 pub fn main_get_connect_status() -> String {

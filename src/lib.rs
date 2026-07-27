@@ -17,6 +17,7 @@ pub mod common;
 #[cfg(not(any(target_os = "ios")))]
 pub mod ipc;
 mod lan;
+mod lan_identity;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod lan_mdns;
 mod lan_protocol;

@@ -1,7 +1,9 @@
 use crate::{
     client::*,
     flutter_ffi::{EventToUI, SessionID},
-    ui_session_interface::{io_loop, InvokeUiSession, LanSessionCredential, Session},
+    ui_session_interface::{
+        io_loop, InvokeUiSession, LanIdentityRequest, LanSessionCredential, Session,
+    },
 };
 use flutter_rust_bridge::StreamSink;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -47,10 +49,16 @@ pub type FlutterSession = Arc<Session<FlutterHandler>>;
 #[derive(Deserialize)]
 struct LanCredentialPayload {
     lan_version: u32,
+    #[serde(default)]
+    identity_id: String,
+    #[serde(default)]
     username: String,
+    #[serde(default)]
     password: String,
     #[serde(default)]
     remember: bool,
+    #[serde(default)]
+    bind_identity: bool,
 }
 
 lazy_static::lazy_static! {
@@ -1343,30 +1351,58 @@ pub fn session_add(
 
     LocalConfig::set_remote_id(&id);
 
-    let lan_credential = if password.is_empty() {
-        None
+    let (lan_credential, lan_identity_request) = if password.is_empty() {
+        (None, None)
     } else {
         let payload: LanCredentialPayload = serde_json::from_str(&password)
             .map_err(|_| anyhow!("Invalid LAN credential payload"))?;
         if payload.lan_version != hbb_common::lan::PROTOCOL_VERSION {
             bail!("Unsupported LAN credential payload version");
         }
-        let username = hbb_common::lan::validate_username(&payload.username)?;
-        hbb_common::lan::validate_password(payload.password.as_bytes())?;
-        Some(LanSessionCredential {
-            username,
-            password: payload.password.into_bytes(),
-            remember: payload.remember,
-        })
+        if !payload.identity_id.is_empty() {
+            if !payload.username.is_empty() || !payload.password.is_empty() {
+                bail!("LAN identity payload must not include plaintext credentials");
+            }
+            if LocalConfig::get_lan_identity(&payload.identity_id).is_none() {
+                bail!("LAN identity does not exist");
+            }
+            (
+                None,
+                Some(LanIdentityRequest {
+                    identity_id: payload.identity_id,
+                    bind_on_success: payload.bind_identity,
+                }),
+            )
+        } else {
+            let username = hbb_common::lan::validate_username(&payload.username)?;
+            hbb_common::lan::validate_password(payload.password.as_bytes())?;
+            (
+                Some(LanSessionCredential {
+                    username,
+                    password: payload.password.into_bytes(),
+                    remember: payload.remember,
+                    identity_id: String::new(),
+                    bind_identity_on_success: false,
+                }),
+                None,
+            )
+        }
     };
     let lan_access_username = lan_credential
         .as_ref()
         .map(|credential| credential.username.clone())
+        .or_else(|| {
+            lan_identity_request.as_ref().and_then(|request| {
+                LocalConfig::get_lan_identity(&request.identity_id)
+                    .map(|identity| identity.username)
+            })
+        })
         .unwrap_or_default();
     zeroize::Zeroize::zeroize(&mut password);
     let session: Session<FlutterHandler> = Session {
         password: String::new(),
         lan_credential: Arc::new(std::sync::Mutex::new(lan_credential)),
+        lan_identity_request: Arc::new(std::sync::Mutex::new(lan_identity_request)),
         server_keyboard_enabled: Arc::new(RwLock::new(true)),
         server_file_transfer_enabled: Arc::new(RwLock::new(true)),
         server_clipboard_enabled: Arc::new(RwLock::new(true)),

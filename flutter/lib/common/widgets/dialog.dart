@@ -11,6 +11,7 @@ import 'package:flutter_hbb/models/state_model.dart';
 import 'package:get/get.dart';
 
 import '../../common.dart';
+import '../../desktop/lan_identity_manager.dart';
 import '../../models/model.dart';
 import '../../models/platform_model.dart';
 
@@ -307,6 +308,10 @@ _connectDialog(
   final errUsername = ''.obs;
   final errPassword = ''.obs;
   bool rememberPassword = false;
+  final List<LanIdentityProfile> lanIdentities = lanAccess && isDesktop
+      ? loadLanIdentityProfiles()
+      : const [];
+  var selectedIdentityId = lanIdentityManualValue;
   if (osUsernameController != null) {
     osUsernameController.addListener(() {
       if (errUsername.value.isNotEmpty) {
@@ -317,13 +322,16 @@ _connectDialog(
 
   dialogManager.dismissAll();
   dialogManager.show((setState, close, context) {
+    final usingLanIdentity =
+        lanAccess && selectedIdentityId != lanIdentityManualValue;
+
     cancel() {
       close();
       closeConnection();
     }
 
     submit() {
-      if (osUsernameController != null) {
+      if (osUsernameController != null && !usingLanIdentity) {
         if (osUsernameController.text.trim().isEmpty) {
           errUsername.value = translate('Empty Username');
           setState(() {});
@@ -334,11 +342,22 @@ _connectDialog(
       final osPassword = osPasswordController?.text ?? '';
       final password = passwordController?.text.trim() ?? '';
       if (lanAccess) {
-        if (osPassword.isEmpty) {
-          errPassword.value = translate('Empty Password');
+        if (usingLanIdentity) {
+          final error = bind.sessionLoginLanIdentity(
+            sessionId: sessionId,
+            identityId: selectedIdentityId,
+            bindOnSuccess: rememberPassword,
+          );
+          if (error.isNotEmpty) {
+            errPassword.value = error;
           setState(() {});
           return;
         }
+        } else if (osPassword.isEmpty) {
+          errPassword.value = translate('Empty Password');
+          setState(() {});
+          return;
+        } else {
         final error = bind.sessionLoginLan(
           sessionId: sessionId,
           username: osUsername,
@@ -350,6 +369,7 @@ _connectDialog(
           errPassword.value = error;
           setState(() {});
           return;
+        }
         }
       } else {
         if (passwordController != null && password.isEmpty) return;
@@ -444,7 +464,37 @@ _connectDialog(
       content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          osAccountWidget(),
+          if (lanAccess && isDesktop && lanIdentities.isNotEmpty)
+            DropdownButtonFormField<String>(
+              key: ValueKey(selectedIdentityId),
+              initialValue: selectedIdentityId,
+              decoration: InputDecoration(
+                labelText: translate('Account'),
+                prefixIcon: const Icon(Icons.badge_outlined),
+              ),
+              items: [
+                DropdownMenuItem(
+                  value: lanIdentityManualValue,
+                  child: Text(
+                    '${translate('Username')} · ${translate('Password')}',
+                  ),
+                ),
+                ...lanIdentities.map(
+                  (identity) => DropdownMenuItem(
+                    value: identity.id,
+                    child: Text(
+                      identity.isDefault
+                          ? '${identity.name} (${translate('Default')})'
+                          : identity.name,
+                    ),
+                  ),
+                ),
+              ],
+              onChanged: (value) => setState(
+                () => selectedIdentityId = value ?? lanIdentityManualValue,
+              ),
+            ).paddingOnly(bottom: 12),
+          if (!usingLanIdentity) osAccountWidget(),
           osUsernameController == null || passwordController == null
               ? Offstage()
               : Container(height: 12),
@@ -457,7 +507,11 @@ _connectDialog(
               contentPadding: EdgeInsets.zero,
               dense: true,
               controlAffinity: ListTileControlAffinity.leading,
-              title: Text(translate('Remember password')),
+              title: Text(
+                usingLanIdentity
+                    ? '${translate('Remember password')} · ${translate('Account')}'
+                    : translate('Remember password'),
+              ),
             ),
         ],
       ),
