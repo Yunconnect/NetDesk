@@ -2057,3 +2057,136 @@ jobs:
         with:
           name: subnetdesk-flatpak-${{ matrix.job.arch }}${{ matrix.job.suffix }}
           path: flatpak/subnetdesk-${{ env.VERSION }}-${{ matrix.job.arch }}${{ matrix.job.suffix }}.flatpak
+
+  publish-download-table:
+    name: Organize release downloads by system and architecture
+    if: ${{ always() && inputs.publish-release }}
+    needs:
+      - build-for-windows-flutter
+      - build-rustdesk-ios
+      - build-for-macOS
+      - publish_unsigned
+      - build-rustdesk-android
+      - build-rustdesk-android-universal
+      - build-rustdesk-linux
+      - build-appimage
+      - build-flatpak
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Build the release download table
+        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6
+        env:
+          RELEASE_TAG: ${{ env.TAG_NAME }}
+        with:
+          script: |
+            const tag = process.env.RELEASE_TAG;
+            const { data: release } = await github.rest.repos.getReleaseByTag({
+              ...context.repo,
+              tag,
+            });
+            const assets = await github.paginate(
+              github.rest.repos.listReleaseAssets,
+              {
+                ...context.repo,
+                release_id: release.id,
+                per_page: 100,
+              },
+            );
+
+            const architecture = (name) => {
+              const lower = name.toLowerCase();
+              if (lower.includes('universal')) return 'universal';
+              if (/(^|[-_.])(aarch64|arm64)([-_.]|$)/.test(lower)) return 'arm64';
+              if (/(^|[-_.])armv7([-_.]|$)/.test(lower)) return 'armv7';
+              if (/(^|[-_.])(x86_64|amd64)([-_.]|$)/.test(lower)) return 'x86_64';
+              return 'other';
+            };
+            const platform = (name) => {
+              const lower = name.toLowerCase();
+              if (lower.endsWith('.exe') || lower.endsWith('.msi')) return 'windows';
+              if (lower.endsWith('.dmg')) return 'macos';
+              if (lower.endsWith('.apk')) return 'android';
+              if (lower.endsWith('.ipa')) return 'ios';
+              if (
+                lower.endsWith('.deb') ||
+                lower.endsWith('.rpm') ||
+                lower.endsWith('.appimage') ||
+                lower.endsWith('.flatpak') ||
+                lower.endsWith('.zst')
+              ) return 'linux';
+              return 'other';
+            };
+            const label = (name) => {
+              const lower = name.toLowerCase();
+              if (lower.endsWith('-suse.rpm')) return 'RPM (SUSE)';
+              if (lower.endsWith('.pkg.tar.zst')) return 'Arch';
+              if (lower.endsWith('.appimage')) return 'AppImage';
+              const extension = name.split('.').pop();
+              return extension ? extension.toUpperCase() : '下载';
+            };
+            const cell = (targetArchitecture, targetPlatform) => {
+              const matches = assets
+                .filter((asset) =>
+                  architecture(asset.name) === targetArchitecture &&
+                  platform(asset.name) === targetPlatform
+                )
+                .sort((left, right) => left.name.localeCompare(right.name));
+              if (matches.length === 0) return '—';
+              return matches
+                .map((asset) => `[${label(asset.name)}](${asset.browser_download_url})`)
+                .join(' · ');
+            };
+
+            const rows = [
+              ['x86-64 (64 位)', 'x86_64'],
+              ['AArch64 / ARM64', 'arm64'],
+              ['ARMv7 (32 位)', 'armv7'],
+              ['通用包', 'universal'],
+            ];
+            const table = [
+              '<!-- subnetdesk-download-table:start -->',
+              tag === 'nightly'
+                ? '> ⚠️ Nightly 是主分支自动构建的测试版本，仅保留最新一次构建产物。'
+                : '> 请根据操作系统和 CPU 架构选择安装包。',
+              '',
+              '| 架构 | Windows | macOS | Linux | Android | iOS |',
+              '| --- | --- | --- | --- | --- | --- |',
+              ...rows.map(([title, arch]) =>
+                `| ${title} | ${cell(arch, 'windows')} | ${cell(arch, 'macos')} | ${cell(arch, 'linux')} | ${cell(arch, 'android')} | ${cell(arch, 'ios')} |`
+              ),
+              '',
+              '<details>',
+              '<summary>如何选择架构？</summary>',
+              '',
+              '- 普通 Intel / AMD 电脑请选择 **x86-64**。',
+              '- Windows on ARM、Apple Silicon 或 ARM Linux 请选择 **ARM64**。',
+              '- Android 不确定架构时优先选择 **通用包**。',
+              '',
+              '</details>',
+              '<!-- subnetdesk-download-table:end -->',
+            ].join('\n');
+
+            const start = '<!-- subnetdesk-download-table:start -->';
+            const end = '<!-- subnetdesk-download-table:end -->';
+            const oldBody = release.body || '';
+            const startIndex = oldBody.indexOf(start);
+            const endIndex = oldBody.indexOf(end);
+            let notes = oldBody;
+            if (startIndex !== -1 && endIndex !== -1 && endIndex >= startIndex) {
+              notes = [
+                oldBody.slice(0, startIndex),
+                oldBody.slice(endIndex + end.length),
+              ].join('').trim();
+            }
+            if (tag === 'nightly' && notes.includes('正在为最新的主分支提交构建测试包。')) {
+              notes = '';
+            }
+            const body = notes ? `${table}\n\n---\n\n${notes}` : table;
+
+            await github.rest.repos.updateRelease({
+              ...context.repo,
+              release_id: release.id,
+              name: tag === 'nightly' ? 'SubnetDesk Nightly' : release.name,
+              body,
+              prerelease: tag === 'nightly' || tag.includes('-'),
+            });
