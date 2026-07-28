@@ -9,6 +9,7 @@ import 'package:get/get.dart';
 import 'package:provider/provider.dart';
 
 import '../../common.dart';
+import '../../models/favorite_group_model.dart';
 import '../../models/peer_model.dart';
 import '../../models/platform_model.dart';
 import 'peer_card.dart';
@@ -330,10 +331,16 @@ class RecentPeersView extends BasePeersView {
 
 class FavoritePeersView extends BasePeersView {
   FavoritePeersView(
-      {Key? key, EdgeInsets? menuPadding, ScrollController? scrollController})
+      {Key? key,
+      EdgeInsets? menuPadding,
+      ScrollController? scrollController,
+      String? groupId})
       : super(
           key: key,
           peerTabIndex: PeerTabIndex.fav,
+          peerFilter: groupId == null
+              ? null
+              : (Peer peer) => favoriteGroupModel.matches(peer.id, groupId),
           peerCardBuilder: (Peer peer) => FavoritePeerCard(
             peer: peer,
             menuPadding: menuPadding,
