@@ -144,6 +144,7 @@ const String kOptionPeerTabIndex = "peer-tab-index";
 const String kOptionPeerTabOrder = "peer-tab-order";
 const String kOptionPeerTabVisible = "peer-tab-visible";
 const String kOptionPeerCardUiType = "peer-card-ui-type";
+const String kOptionFavoritePeerGroups = "favorite-peer-groups";
 const String kOptionCurrentAbName = "current-ab-name";
 const String kOptionEnableConfirmClosingTabs = "enable-confirm-closing-tabs";
 const String kOptionAllowAlwaysSoftwareRender = "allow-always-software-render";

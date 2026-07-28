@@ -11,10 +11,12 @@ class PeerTabPage extends StatelessWidget {
     Key? key,
     this.selectedIndex,
     this.showTabs = true,
+    this.favoriteGroupId,
   }) : super(key: key);
 
   final int? selectedIndex;
   final bool showTabs;
+  final String? favoriteGroupId;
 
   @override
   Widget build(BuildContext context) {
@@ -23,7 +25,7 @@ class PeerTabPage extends StatelessWidget {
     if (!showTabs) {
       return switch (currentIndex) {
         0 => RecentPeersView(),
-        1 => FavoritePeersView(),
+        1 => FavoritePeersView(groupId: favoriteGroupId),
         _ => DiscoveredPeersView(),
       };
     }

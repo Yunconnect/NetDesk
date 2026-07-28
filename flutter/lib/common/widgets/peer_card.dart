@@ -10,6 +10,7 @@ import 'package:provider/provider.dart';
 import '../../common.dart';
 import '../../common/formatter/id_formatter.dart';
 import '../../desktop/lan_identity_manager.dart';
+import '../../models/favorite_group_model.dart';
 import '../../models/peer_model.dart';
 import '../../models/platform_model.dart';
 import '../../desktop/widgets/material_mod_popup_menu.dart' as mod_menu;
@@ -79,6 +80,7 @@ class _PeerCardState extends State<_PeerCard>
     final favorites = (await bind.mainGetFav()).toList();
     if (favorites.contains(widget.peer.id)) {
       favorites.remove(widget.peer.id);
+      favoriteGroupModel.removePeer(widget.peer.id);
     } else {
       favorites.add(widget.peer.id);
     }
@@ -955,6 +957,7 @@ abstract class BasePeerCard extends StatelessWidget {
               final favs = (await bind.mainGetFav()).toList();
               if (favs.remove(id)) {
                 await bind.mainStoreFav(favs: favs);
+                favoriteGroupModel.removePeer(id);
                 bind.mainLoadFavPeers();
               }
               break;
@@ -1030,6 +1033,7 @@ abstract class BasePeerCard extends StatelessWidget {
           final favs = (await bind.mainGetFav()).toList();
           if (favs.remove(id)) {
             await bind.mainStoreFav(favs: favs);
+            favoriteGroupModel.removePeer(id);
             await reloadFunc();
           }
           showToast(translate('Successful'));
@@ -1144,6 +1148,8 @@ class FavoritePeerCard extends BasePeerCard {
     if (isMobile || isDesktop || isWebDesktop) {
       menuItems.add(_renameAction(peer.id));
     }
+    favoriteGroupModel.load();
+    menuItems.add(_favoriteGroupAction(peer.id));
     menuItems.add(
       _rmFavAction(peer.id, () async {
         await bind.mainLoadFavPeers();
@@ -1158,6 +1164,53 @@ class FavoritePeerCard extends BasePeerCard {
   @protected
   @override
   void _update() => bind.mainLoadFavPeers();
+
+  MenuEntryBase<String> _favoriteGroupAction(String peerId) {
+    final selectedGroupId = favoriteGroupModel.groupIdForPeer(peerId);
+    final entries = <MenuEntryBase<String>>[
+      _favoriteGroupChoice(
+        peerId: peerId,
+        groupId: null,
+        label: translate('Other'),
+        selected: selectedGroupId == null,
+      ),
+      ...favoriteGroupModel.groups.map(
+        (group) => _favoriteGroupChoice(
+          peerId: peerId,
+          groupId: group.id,
+          label: group.name,
+          selected: selectedGroupId == group.id,
+        ),
+      ),
+    ];
+    return MenuEntrySubMenu<String>(
+      text: translate('Group'),
+      entries: entries,
+      padding: menuPadding,
+    );
+  }
+
+  MenuEntryBase<String> _favoriteGroupChoice({
+    required String peerId,
+    required String? groupId,
+    required String label,
+    required bool selected,
+  }) {
+    return MenuEntryButton<String>(
+      childBuilder: (TextStyle? style) => Row(
+        children: [
+          Expanded(child: Text(label, style: style)),
+          if (selected) const Icon(Icons.check, size: 16),
+        ],
+      ),
+      proc: () async {
+        favoriteGroupModel.setPeerGroup(peerId, groupId);
+        await bind.mainLoadFavPeers();
+      },
+      padding: menuPadding,
+      dismissOnClicked: true,
+    );
+  }
 }
 
 class DiscoveredPeerCard extends BasePeerCard {

@@ -16,6 +16,7 @@ import 'package:window_manager/window_manager.dart';
 import '../../common.dart';
 import '../../common/formatter/id_formatter.dart';
 import '../../common/widgets/peer_tab_page.dart';
+import '../../models/favorite_group_model.dart';
 import '../../models/platform_model.dart';
 import '../lan_identity_manager.dart';
 
@@ -146,10 +147,14 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
 
 /// Connection page for connecting to a remote peer.
 class ConnectionPage extends StatefulWidget {
-  const ConnectionPage({Key? key, this.selectedPeerTab = PeerTabIndex.lan})
-    : super(key: key);
+  const ConnectionPage({
+    Key? key,
+    this.selectedPeerTab = PeerTabIndex.lan,
+    this.favoriteGroupId,
+  }) : super(key: key);
 
   final PeerTabIndex selectedPeerTab;
+  final String? favoriteGroupId;
 
   @override
   State<ConnectionPage> createState() => _ConnectionPageState();
@@ -211,7 +216,8 @@ class _ConnectionPageState extends State<ConnectionPage> with WindowListener {
   @override
   void didUpdateWidget(covariant ConnectionPage oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.selectedPeerTab != widget.selectedPeerTab) {
+    if (oldWidget.selectedPeerTab != widget.selectedPeerTab ||
+        oldWidget.favoriteGroupId != widget.favoriteGroupId) {
       peerSearchText.value = '';
       peerSearchTextController.clear();
       _loadSelectedPeers();
@@ -305,9 +311,12 @@ class _ConnectionPageState extends State<ConnectionPage> with WindowListener {
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final border = isDark ? Colors.white12 : const Color(0xFFE4E8F0);
-    final sectionTitle = switch (widget.selectedPeerTab) {
+    String sectionTitle() => switch (widget.selectedPeerTab) {
       PeerTabIndex.recent => translate('Recent sessions'),
-      PeerTabIndex.fav => translate('Favorites'),
+      PeerTabIndex.fav => widget.favoriteGroupId == favoriteUngroupedId
+          ? translate('Other')
+          : favoriteGroupModel.groupById(widget.favoriteGroupId ?? '')?.name ??
+              translate('Favorites'),
       PeerTabIndex.lan => translate('Discovered'),
     };
     final peers = switch (widget.selectedPeerTab) {
@@ -415,33 +424,47 @@ class _ConnectionPageState extends State<ConnectionPage> with WindowListener {
               children: [
                 AnimatedBuilder(
                   animation: peers,
-                  builder: (context, _) => Text.rich(
-                    TextSpan(
-                      children: [
+                  builder: (context, _) => AnimatedBuilder(
+                    animation: favoriteGroupModel,
+                    builder: (context, _) {
+                      final count = widget.selectedPeerTab == PeerTabIndex.fav
+                          ? favoriteGroupModel.countForGroup(
+                              peers.peers.map((peer) => peer.id),
+                              widget.favoriteGroupId,
+                            )
+                          : peers.peers.length;
+                      return Text.rich(
                         TextSpan(
-                          text: sectionTitle,
-                          style: const TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.w600,
-                          ),
+                          children: [
+                            TextSpan(
+                              text: sectionTitle(),
+                              style: const TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            TextSpan(
+                              text: '  ($count)',
+                              style: TextStyle(
+                                fontSize: 15,
+                                color: Theme.of(context).hintColor,
+                              ),
+                            ),
+                          ],
                         ),
-                        TextSpan(
-                          text: '  (${peers.peers.length})',
-                          style: TextStyle(
-                            fontSize: 15,
-                            color: Theme.of(context).hintColor,
-                          ),
-                        ),
-                      ],
-                    ),
+                      );
+                    },
                   ),
                 ),
                 const SizedBox(height: 14),
                 Expanded(
                   child: PeerTabPage(
-                    key: ValueKey(widget.selectedPeerTab),
+                    key: ValueKey(
+                      '${widget.selectedPeerTab.index}:${widget.favoriteGroupId ?? 'all'}',
+                    ),
                     selectedIndex: widget.selectedPeerTab.index,
                     showTabs: false,
+                    favoriteGroupId: widget.favoriteGroupId,
                   ),
                 ),
               ],

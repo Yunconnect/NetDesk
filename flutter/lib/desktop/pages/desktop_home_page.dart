@@ -11,6 +11,7 @@ import 'package:flutter_hbb/desktop/pages/desktop_setting_page.dart';
 import 'package:flutter_hbb/desktop/lan_device_name.dart';
 import 'package:flutter_hbb/desktop/lan_server_status.dart';
 import 'package:flutter_hbb/desktop/setup_readiness.dart';
+import 'package:flutter_hbb/models/favorite_group_model.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/models/peer_tab_model.dart';
 import 'package:flutter_hbb/plugin/ui_manager.dart';
@@ -1385,6 +1386,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   Timer? _updateTimer;
   bool isCardClosed = false;
   PeerTabIndex _selectedPeerTab = PeerTabIndex.lan;
+  String? _selectedFavoriteGroupId;
 
   final RxBool _editHover = false.obs;
   final RxBool _block = false.obs;
@@ -1401,7 +1403,14 @@ class _DesktopHomePageState extends State<DesktopHomePage>
           children: [
             _buildNavigationSidebar(context),
             const VerticalDivider(width: 1, thickness: 1),
-            Expanded(child: ConnectionPage(selectedPeerTab: _selectedPeerTab)),
+            Expanded(
+              child: ConnectionPage(
+                selectedPeerTab: _selectedPeerTab,
+                favoriteGroupId: _selectedPeerTab == PeerTabIndex.fav
+                    ? _selectedFavoriteGroupId
+                    : null,
+              ),
+            ),
           ],
         ),
       );
@@ -1511,6 +1520,8 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                     label: translate('Favorites'),
                     tab: PeerTabIndex.fav,
                   ),
+                  if (_selectedPeerTab == PeerTabIndex.fav)
+                    _buildFavoriteGroupSidebar(context),
                   _buildSidebarItem(
                     context,
                     icon: Icons.settings_outlined,
@@ -2083,6 +2094,294 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     );
   }
 
+  Widget _buildFavoriteGroupSidebar(BuildContext context) {
+    return AnimatedBuilder(
+      animation: favoriteGroupModel,
+      builder: (context, _) => AnimatedBuilder(
+        animation: gFFI.favoritePeersModel,
+        builder: (context, _) {
+          final favoriteIds =
+              gFFI.favoritePeersModel.peers.map((peer) => peer.id).toList();
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(42, 2, 18, 8),
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        translate('Group'),
+                        style: TextStyle(
+                          color: Theme.of(context).hintColor,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 0.4,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: '${translate('Add')} ${translate('Group')}',
+                      visualDensity: VisualDensity.compact,
+                      constraints:
+                          const BoxConstraints.tightFor(width: 28, height: 28),
+                      padding: EdgeInsets.zero,
+                      icon: const Icon(Icons.add_rounded, size: 17),
+                      onPressed: () => _createFavoriteGroup(context),
+                    ),
+                  ],
+                ),
+                _buildFavoriteGroupItem(
+                  context,
+                  id: null,
+                  label: translate('Select All'),
+                  count: favoriteIds.length,
+                ),
+                ...favoriteGroupModel.groups.map(
+                  (group) => _buildFavoriteGroupItem(
+                    context,
+                    id: group.id,
+                    label: group.name,
+                    count: favoriteGroupModel.countForGroup(
+                      favoriteIds,
+                      group.id,
+                    ),
+                    group: group,
+                  ),
+                ),
+                _buildFavoriteGroupItem(
+                  context,
+                  id: favoriteUngroupedId,
+                  label: translate('Other'),
+                  count: favoriteGroupModel.countForGroup(
+                    favoriteIds,
+                    favoriteUngroupedId,
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildFavoriteGroupItem(
+    BuildContext context, {
+    required String? id,
+    required String label,
+    required int count,
+    FavoriteGroup? group,
+  }) {
+    final selected = _selectedFavoriteGroupId == id;
+    final primary = Theme.of(context).colorScheme.primary;
+    final foreground = selected
+        ? primary
+        : Theme.of(context)
+            .textTheme
+            .bodyMedium
+            ?.color
+            ?.withValues(alpha: 0.68);
+    return Padding(
+      padding: const EdgeInsets.only(top: 2),
+      child: Material(
+        color: selected
+            ? primary.withValues(alpha: 0.08)
+            : Colors.transparent,
+        borderRadius: BorderRadius.circular(8),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: () {
+            setState(() {
+              _selectedPeerTab = PeerTabIndex.fav;
+              _selectedFavoriteGroupId = id;
+            });
+          },
+          child: SizedBox(
+            height: 34,
+            child: Row(
+              children: [
+                const SizedBox(width: 10),
+                Icon(
+                  id == null
+                      ? Icons.all_inbox_outlined
+                      : id == favoriteUngroupedId
+                          ? Icons.folder_off_outlined
+                          : Icons.folder_outlined,
+                  size: 16,
+                  color: foreground,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: foreground,
+                      fontSize: 12,
+                      fontWeight:
+                          selected ? FontWeight.w600 : FontWeight.w400,
+                    ),
+                  ),
+                ),
+                Text(
+                  '$count',
+                  style: TextStyle(
+                    color: Theme.of(context).hintColor,
+                    fontSize: 11,
+                  ),
+                ),
+                if (group != null)
+                  PopupMenuButton<String>(
+                    tooltip: translate('More'),
+                    padding: EdgeInsets.zero,
+                    iconSize: 16,
+                    onSelected: (action) {
+                      if (action == 'rename') {
+                        _renameFavoriteGroup(context, group);
+                      } else if (action == 'delete') {
+                        _deleteFavoriteGroup(context, group);
+                      }
+                    },
+                    itemBuilder: (context) => [
+                      PopupMenuItem(
+                        value: 'rename',
+                        child: Text(translate('Rename')),
+                      ),
+                      PopupMenuItem(
+                        value: 'delete',
+                        child: Text(translate('Delete')),
+                      ),
+                    ],
+                  )
+                else
+                  const SizedBox(width: 10),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<String?> _showFavoriteGroupNameDialog(
+    BuildContext context, {
+    String initialValue = '',
+    String? editingGroupId,
+  }) async {
+    final formKey = GlobalKey<FormState>();
+    var currentValue = initialValue;
+    return showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(
+          initialValue.isEmpty
+              ? '${translate('Add')} ${translate('Group')}'
+              : '${translate('Rename')} ${translate('Group')}',
+        ),
+        content: Form(
+          key: formKey,
+          child: TextFormField(
+            initialValue: initialValue,
+            autofocus: true,
+            maxLength: 32,
+            decoration: InputDecoration(
+              labelText: '${translate('Group')} ${translate('Name')}',
+            ),
+            onChanged: (value) => currentValue = value,
+            validator: (value) {
+              final name = normalizeFavoriteGroupName(value ?? '');
+              if (name.isEmpty) {
+                return '${translate('Name')} · ${translate('Empty')}';
+              }
+              final duplicate = favoriteGroupModel.groups.any(
+                (group) =>
+                    group.id != editingGroupId &&
+                    group.name.toLowerCase() == name.toLowerCase(),
+              );
+              if (duplicate) {
+                return '${translate('Group')} ${translate('Already exists')}';
+              }
+              return null;
+            },
+            onFieldSubmitted: (value) {
+              if (formKey.currentState?.validate() == true) {
+                Navigator.of(dialogContext).pop(value);
+              }
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: Text(translate('Cancel')),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              if (formKey.currentState?.validate() == true) {
+                Navigator.of(dialogContext).pop(currentValue);
+              }
+            },
+            child: Text(translate('OK')),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _createFavoriteGroup(BuildContext context) async {
+    final name = await _showFavoriteGroupNameDialog(context);
+    if (name == null) return;
+    if (!favoriteGroupModel.createGroup(name)) {
+      showToast(translate('Already exists'));
+    }
+  }
+
+  Future<void> _renameFavoriteGroup(
+    BuildContext context,
+    FavoriteGroup group,
+  ) async {
+    final name = await _showFavoriteGroupNameDialog(
+      context,
+      initialValue: group.name,
+      editingGroupId: group.id,
+    );
+    if (name == null) return;
+    if (!favoriteGroupModel.renameGroup(group.id, name)) {
+      showToast(translate('Already exists'));
+    }
+  }
+
+  Future<void> _deleteFavoriteGroup(
+    BuildContext context,
+    FavoriteGroup group,
+  ) async {
+    final shouldDelete = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('${translate('Delete')} ${translate('Group')}?'),
+        content: Text(group.name),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: Text(translate('Cancel')),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: Text(translate('Delete')),
+          ),
+        ],
+      ),
+    );
+    if (shouldDelete != true) return;
+
+    favoriteGroupModel.deleteGroup(group.id);
+    if (_selectedFavoriteGroupId == group.id && mounted) {
+      setState(() => _selectedFavoriteGroupId = favoriteUngroupedId);
+    }
+    await bind.mainLoadFavPeers();
+  }
+
   Widget _buildBlock({required Widget child}) {
     return buildRemoteBlock(
       block: _block,
@@ -2188,7 +2487,12 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   buildRightPane(BuildContext context) {
     return Container(
       color: Theme.of(context).scaffoldBackgroundColor,
-      child: ConnectionPage(selectedPeerTab: _selectedPeerTab),
+      child: ConnectionPage(
+        selectedPeerTab: _selectedPeerTab,
+        favoriteGroupId: _selectedPeerTab == PeerTabIndex.fav
+            ? _selectedFavoriteGroupId
+            : null,
+      ),
     );
   }
 
@@ -2509,6 +2813,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   @override
   void initState() {
     super.initState();
+    favoriteGroupModel.load();
     _updateTimer = periodic_immediate(const Duration(seconds: 1), () async {
       final error = await bind.mainGetError();
       if (systemError != error) {
