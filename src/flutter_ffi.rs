@@ -1664,7 +1664,15 @@ pub fn main_get_fingerprint() -> String {
     crate::lan_protocol::fingerprint(&Config::get_key_pair().1)
 }
 
+pub fn main_get_lan_server_info() -> String {
+    lan_server_info()
+}
+
 pub fn main_get_lan_server_info_sync() -> SyncReturn<String> {
+    SyncReturn(lan_server_info())
+}
+
+fn lan_server_info() -> String {
     let configured = Config::lan_credentials_configured();
     let service_stopped = config::option2bool(
         "stop-service",
@@ -1757,7 +1765,7 @@ pub fn main_get_lan_server_info_sync() -> SyncReturn<String> {
         "web_ca_certificate_path": web_ca_certificate_path,
         "web_runtime": web_runtime,
     });
-    SyncReturn(data.to_string())
+    data.to_string()
 }
 
 fn lan_server_running_for_ui(configured: bool, service_stopped: bool) -> bool {

@@ -53,6 +53,8 @@ class LanServerInfoPanel extends StatefulWidget {
 class _LanServerInfoPanelState extends State<LanServerInfoPanel> {
   Timer? _timer;
   bool _showAllAddresses = false;
+  bool _refreshing = false;
+  Map<String, dynamic> _info = <String, dynamic>{};
 
   int _addressPriority(String address) {
     final parsed = InternetAddress.tryParse(address);
@@ -75,21 +77,30 @@ class _LanServerInfoPanelState extends State<LanServerInfoPanel> {
   String _formatEndpoint(String address, String port) =>
       address.contains(':') ? '[$address]:$port' : '$address:$port';
 
-  Map<String, dynamic> get _info {
+  Future<void> _refreshInfo() async {
+    if (_refreshing) return;
+    _refreshing = true;
     try {
-      return jsonDecode(bind.mainGetLanServerInfoSync())
+      final info = jsonDecode(await bind.mainGetLanServerInfo())
           as Map<String, dynamic>;
+      if (mounted) {
+        setState(() => _info = info);
+      }
     } catch (_) {
-      return <String, dynamic>{};
+      // Keep the last successful snapshot while the host state is unavailable.
+    } finally {
+      _refreshing = false;
     }
   }
 
   @override
   void initState() {
     super.initState();
-    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted) setState(() {});
-    });
+    _refreshInfo();
+    _timer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) => _refreshInfo(),
+    );
   }
 
   @override
@@ -747,7 +758,8 @@ Future<void> showLanSettingsDialog(
 }) async {
   Map<String, dynamic> info;
   try {
-    info = jsonDecode(bind.mainGetLanServerInfoSync()) as Map<String, dynamic>;
+    info = jsonDecode(await bind.mainGetLanServerInfo())
+        as Map<String, dynamic>;
   } catch (_) {
     info = <String, dynamic>{};
   }
@@ -1284,7 +1296,8 @@ Future<void> showLanSettingsDialog(
                                     try {
                                       final currentInfo =
                                           jsonDecode(
-                                                bind.mainGetLanServerInfoSync(),
+                                                await bind
+                                                    .mainGetLanServerInfo(),
                                               )
                                               as Map<String, dynamic>;
                                       final runtime =

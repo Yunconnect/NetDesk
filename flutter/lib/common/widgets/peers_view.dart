@@ -370,8 +370,10 @@ class DiscoveredPeersView extends BasePeersView {
   @override
   Widget build(BuildContext context) {
     final widget = super.build(context);
-    bind.mainLoadLanPeers();
-    bind.mainDiscover();
+    if (!isDesktop) {
+      bind.mainLoadLanPeers();
+      bind.mainDiscover();
+    }
     return widget;
   }
 }
