@@ -112,11 +112,11 @@ static void my_application_activate(GApplication* application) {
   GtkWindow* window =
       GTK_WINDOW(gtk_application_window_new(GTK_APPLICATION(application)));
   gtk_window_set_decorated(window, FALSE);
-  // try setting icon for rustdesk, which uses the system cache
+  // Try setting the SubnetDesk icon from the system cache.
   GtkIconTheme* theme = gtk_icon_theme_get_default();
   gint icons[4] = {256, 128, 64, 32};
   for (int i = 0; i < 4; i++) {
-    GdkPixbuf* icon = gtk_icon_theme_load_icon(theme, "rustdesk", icons[i], GTK_ICON_LOOKUP_NO_SVG, NULL);
+    GdkPixbuf* icon = gtk_icon_theme_load_icon(theme, "subnetdesk", icons[i], GTK_ICON_LOOKUP_NO_SVG, NULL);
     if (icon != nullptr) {
       gtk_window_set_icon(window, icon);
     }
@@ -142,11 +142,11 @@ static void my_application_activate(GApplication* application) {
   if (use_header_bar) {
     GtkHeaderBar* header_bar = GTK_HEADER_BAR(gtk_header_bar_new());
     gtk_widget_show(GTK_WIDGET(header_bar));
-    gtk_header_bar_set_title(header_bar, "rustdesk");
+    gtk_header_bar_set_title(header_bar, "SubnetDesk");
     gtk_header_bar_set_show_close_button(header_bar, TRUE);
     gtk_window_set_titlebar(window, GTK_WIDGET(header_bar));
   } else {
-    gtk_window_set_title(window, "rustdesk");
+    gtk_window_set_title(window, "SubnetDesk");
   }
 
   // auto bdw = bitsdojo_window_from(window); // <--- add this line
@@ -330,12 +330,17 @@ void try_set_transparent(GtkWindow* window, GdkScreen* screen, FlView* view)
     gtk_gl_area_set_has_alpha(GTK_GL_AREA(gl_area), TRUE);
   }
 
+  gboolean transparency_available = FALSE;
   if (screen != NULL) {
     GdkVisual *visual = NULL;
     gtk_widget_set_app_paintable(GTK_WIDGET(window), TRUE);
     visual = gdk_screen_get_rgba_visual(screen);
     if (visual != NULL && gdk_screen_is_composited(screen)) {
       gtk_widget_set_visual(GTK_WIDGET(window), visual);
+      transparency_available = TRUE;
     }
+  }
+  if (!transparency_available) {
+    gtk_widget_set_app_paintable(GTK_WIDGET(window), FALSE);
   }
 }

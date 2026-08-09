@@ -7,6 +7,11 @@ interface VideoDecodeQueue {
   reset?(): void;
 }
 
+interface ClosableVideoDecoder {
+  readonly state: string;
+  close(): void;
+}
+
 type EncodedVideoChunkFactory = (init: EncodedVideoChunkInit) => EncodedVideoChunk;
 
 export interface VideoDecodeState {
@@ -16,7 +21,33 @@ export interface VideoDecodeState {
   codec: ProtocolVideoCodec;
 }
 
+export interface DecoderRecoveryState {
+  attempts: number;
+  maxAttempts: number;
+}
+
 const MAX_DECODE_QUEUE_SIZE = 6;
+
+export function initialDecoderRecoveryState(maxAttempts = 1): DecoderRecoveryState {
+  return { attempts: 0, maxAttempts };
+}
+
+export function requestDecoderRecovery(previous: DecoderRecoveryState): {
+  state: DecoderRecoveryState;
+  shouldRetry: boolean;
+} {
+  if (previous.attempts >= previous.maxAttempts) {
+    return { state: previous, shouldRetry: false };
+  }
+  return {
+    state: { ...previous, attempts: previous.attempts + 1 },
+    shouldRetry: true,
+  };
+}
+
+export function closeVideoDecoder(decoder: ClosableVideoDecoder | undefined): void {
+  if (decoder && decoder.state !== "closed") decoder.close();
+}
 
 export function initialVideoDecodeState(codec: ProtocolVideoCodec = "vp9"): VideoDecodeState {
   return {

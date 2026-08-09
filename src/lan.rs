@@ -16,7 +16,7 @@ use hbb_common::{
 };
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs, UdpSocket},
     time::Instant,
 };
@@ -25,6 +25,51 @@ const LAN_DISCOVERY_PORT: u16 = 21_119;
 pub(crate) const LAN_DEVICE_NAME_OPTION: &str = "lan-device-name";
 
 type Message = RendezvousMessage;
+
+pub(crate) fn connectable_local_address(address: IpAddr) -> bool {
+    if address.is_loopback() || address.is_unspecified() || address.is_multicast() {
+        return false;
+    }
+    match address {
+        IpAddr::V4(_) => true,
+        IpAddr::V6(address) => (address.segments()[0] & 0xffc0) != 0xfe80,
+    }
+}
+
+#[cfg(not(target_os = "ios"))]
+pub(crate) fn local_connectable_addresses() -> Vec<IpAddr> {
+    let mut addresses = default_net::get_interfaces()
+        .into_iter()
+        .flat_map(|interface| {
+            interface
+                .ipv4
+                .into_iter()
+                .map(|network| IpAddr::V4(network.addr))
+                .chain(
+                    interface
+                        .ipv6
+                        .into_iter()
+                        .map(|network| IpAddr::V6(network.addr)),
+                )
+        })
+        .filter(|address| connectable_local_address(*address))
+        .collect::<BTreeSet<_>>();
+    if let Some(address) = get_ipaddr_by_peer((Ipv4Addr::new(192, 0, 2, 1), 9)) {
+        if connectable_local_address(address) {
+            addresses.insert(address);
+        }
+    }
+    addresses.into_iter().collect()
+}
+
+#[cfg(target_os = "ios")]
+pub(crate) fn local_connectable_addresses() -> Vec<IpAddr> {
+    Vec::new()
+}
+
+fn directed_broadcast(address: Ipv4Addr, netmask: Ipv4Addr) -> Ipv4Addr {
+    Ipv4Addr::from(u32::from(address) | !u32::from(netmask))
+}
 
 pub(crate) fn sanitize_lan_device_name(value: &str) -> String {
     value
@@ -76,11 +121,7 @@ pub(super) fn start_listening() -> ResultType<()> {
                     Some(rendezvous_message::Union::PeerDiscovery(p)) => {
                         if p.cmd == "ping"
                             && Config::get_option("lan-discovery-enabled") != "N"
-                            && Config::lan_credentials_configured()
-                            && !config::option2bool(
-                                "stop-service",
-                                &Config::get_option("stop-service"),
-                            )
+                            && crate::lan_server::LanServer::is_discoverable()
                             && crate::lan_server::source_allowed(addr.ip())
                         {
                             let fingerprint =
@@ -304,7 +345,7 @@ fn get_ipaddr_by_peer<A: ToSocketAddrs>(peer: A) -> Option<IpAddr> {
     };
 }
 
-fn create_broadcast_sockets() -> Vec<UdpSocket> {
+fn create_broadcast_sockets() -> Vec<(UdpSocket, Ipv4Addr)> {
     let mut ipv4s = Vec::new();
     // TODO: maybe we should use a better way to get ipv4 addresses.
     // But currently, it's ok to use `[Ipv4Addr::UNSPECIFIED]` for discovery.
@@ -312,16 +353,26 @@ fn create_broadcast_sockets() -> Vec<UdpSocket> {
     #[cfg(not(any(target_os = "ios")))]
     for interface in default_net::get_interfaces() {
         for ipv4 in &interface.ipv4 {
-            ipv4s.push(ipv4.addr.clone());
+            if connectable_local_address(IpAddr::V4(ipv4.addr)) {
+                ipv4s.push((ipv4.addr, directed_broadcast(ipv4.addr, ipv4.netmask)));
+            }
         }
     }
-    ipv4s.push(Ipv4Addr::UNSPECIFIED); // for robustness
+    #[cfg(not(target_os = "ios"))]
+    if let Some(IpAddr::V4(address)) = get_ipaddr_by_peer((Ipv4Addr::new(192, 0, 2, 1), 9)) {
+        if connectable_local_address(IpAddr::V4(address))
+            && !ipv4s.iter().any(|(candidate, _)| *candidate == address)
+        {
+            ipv4s.push((address, Ipv4Addr::BROADCAST));
+        }
+    }
+    ipv4s.push((Ipv4Addr::UNSPECIFIED, Ipv4Addr::BROADCAST)); // for robustness
     let mut sockets = Vec::new();
-    for v4_addr in ipv4s {
+    for (v4_addr, broadcast) in ipv4s {
         // removing v4_addr.is_private() check, https://github.com/rustdesk/rustdesk/issues/4663
         if let Ok(s) = UdpSocket::bind(SocketAddr::from((v4_addr, 0))) {
             if s.set_broadcast(true).is_ok() {
-                sockets.push(s);
+                sockets.push((s, broadcast));
             }
         }
     }
@@ -344,11 +395,15 @@ fn send_query() -> ResultType<Vec<UdpSocket>> {
     msg_out.set_peer_discovery(peer);
     let out = msg_out.write_to_bytes()?;
     let maddr = SocketAddr::from(([255, 255, 255, 255], get_broadcast_port()));
-    for socket in &sockets {
-        allow_err!(socket.send_to(&out, maddr));
+    for (socket, broadcast) in &sockets {
+        let directed = SocketAddr::from((*broadcast, get_broadcast_port()));
+        allow_err!(socket.send_to(&out, directed));
+        if *broadcast != Ipv4Addr::BROADCAST {
+            allow_err!(socket.send_to(&out, maddr));
+        }
     }
     log::info!("discover ping sent");
-    Ok(sockets)
+    Ok(sockets.into_iter().map(|(socket, _)| socket).collect())
 }
 
 fn wait_response(
@@ -446,10 +501,7 @@ fn wait_response(
     Ok(())
 }
 
-fn spawn_wait_responses(
-    sockets: Vec<UdpSocket>,
-    tx: UnboundedSender<config::DiscoveryPeer>,
-) {
+fn spawn_wait_responses(sockets: Vec<UdpSocket>, tx: UnboundedSender<config::DiscoveryPeer>) {
     for socket in sockets {
         let tx_clone = tx.clone();
         std::thread::spawn(move || {
@@ -575,5 +627,30 @@ mod tests {
         assert_eq!(resolved_fingerprint, Some(fingerprint));
         assert_eq!(candidates[0], "10.9.0.20:21118");
         assert!(candidates.contains(&"192.168.1.20:21118".to_owned()));
+    }
+
+    #[test]
+    fn calculates_interface_directed_broadcast() {
+        assert_eq!(
+            directed_broadcast(
+                "192.168.42.19".parse().unwrap(),
+                "255.255.255.0".parse().unwrap()
+            ),
+            "192.168.42.255".parse::<Ipv4Addr>().unwrap()
+        );
+        assert_eq!(
+            directed_broadcast("10.12.3.4".parse().unwrap(), "255.255.0.0".parse().unwrap()),
+            "10.12.255.255".parse::<Ipv4Addr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn excludes_unscoped_or_unusable_local_addresses() {
+        assert!(connectable_local_address("192.168.1.20".parse().unwrap()));
+        assert!(connectable_local_address("fd00::20".parse().unwrap()));
+        assert!(!connectable_local_address("0.0.0.0".parse().unwrap()));
+        assert!(!connectable_local_address("127.0.0.1".parse().unwrap()));
+        assert!(!connectable_local_address("fe80::20".parse().unwrap()));
+        assert!(!connectable_local_address("ff02::fb".parse().unwrap()));
     }
 }

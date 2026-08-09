@@ -1,6 +1,7 @@
 import type { VideoFrame as ProtocolVideoFrame } from "./generated/message";
 import type { ProtocolVideoCodec } from "./capabilities";
 import {
+  closeVideoDecoder,
   decodeVideoBatch,
   initialVideoDecodeState,
   type VideoDecodeState,
@@ -51,7 +52,7 @@ function post(message: WorkerOutput): void {
 }
 
 function resetDecoder(): void {
-  decoder?.close();
+  closeVideoDecoder(decoder);
   decoder = undefined;
   pendingAcks = 0;
   renderedFrames = 0;

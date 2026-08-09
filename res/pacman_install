@@ -5,10 +5,9 @@
 # arg 1:  the new package version
 post_install() {
 	# do something here
-	rm -f /etc/systemd/system/rustdesk.service
-	cp /usr/share/rustdesk/files/subnetdesk.service /etc/systemd/system/subnetdesk.service
-	cp /usr/share/rustdesk/files/rustdesk.desktop /usr/share/applications/
-	cp /usr/share/rustdesk/files/rustdesk-link.desktop /usr/share/applications/
+	cp /usr/share/subnetdesk/files/subnetdesk.service /etc/systemd/system/subnetdesk.service
+	cp /usr/share/subnetdesk/files/subnetdesk.desktop /usr/share/applications/
+	cp /usr/share/subnetdesk/files/subnetdesk-link.desktop /usr/share/applications/
 	systemctl daemon-reload
 	systemctl enable subnetdesk
 	systemctl start subnetdesk
@@ -19,17 +18,14 @@ post_install() {
 # arg 2:  the old package version
 pre_upgrade() {
 	systemctl stop subnetdesk || true
-    systemctl stop rustdesk || true
 }
 
 # arg 1:  the new package version
 # arg 2:  the old package version
 post_upgrade() {
-	systemctl disable rustdesk || true
-	rm -f /etc/systemd/system/rustdesk.service
-	cp /usr/share/rustdesk/files/subnetdesk.service /etc/systemd/system/subnetdesk.service
-	cp /usr/share/rustdesk/files/rustdesk.desktop /usr/share/applications/
-	cp /usr/share/rustdesk/files/rustdesk-link.desktop /usr/share/applications/
+	cp /usr/share/subnetdesk/files/subnetdesk.service /etc/systemd/system/subnetdesk.service
+	cp /usr/share/subnetdesk/files/subnetdesk.desktop /usr/share/applications/
+	cp /usr/share/subnetdesk/files/subnetdesk-link.desktop /usr/share/applications/
 	systemctl daemon-reload
 	systemctl enable subnetdesk
 	systemctl start subnetdesk
@@ -40,15 +36,12 @@ post_upgrade() {
 pre_remove() {
 	systemctl stop subnetdesk || true
 	systemctl disable subnetdesk || true
-	systemctl stop rustdesk || true
-	systemctl disable rustdesk || true
 	rm /etc/systemd/system/subnetdesk.service || true
-	rm /etc/systemd/system/rustdesk.service || true
 }
 
 # arg 1:  the old package version
 post_remove() {
-	rm /usr/share/applications/rustdesk.desktop || true
-	rm /usr/share/applications/rustdesk-link.desktop || true
+	rm /usr/share/applications/subnetdesk.desktop || true
+	rm /usr/share/applications/subnetdesk-link.desktop || true
 	update-desktop-database
 }

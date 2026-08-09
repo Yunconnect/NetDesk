@@ -234,14 +234,27 @@ class _InstallPageBodyState extends State<_InstallPageBody>
   }
 
   void install() {
-    do_install() {
+    do_install() async {
       btnEnabled.value = false;
       showProgress.value = true;
       String args = '';
       if (startmenu.value) args += ' startmenu';
       if (desktopicon.value) args += ' desktopicon';
       if (printer.value) args += ' printer';
-      bind.installInstallMe(options: args, path: controller.text);
+      String error;
+      try {
+        error = await bind.installInstallMe(
+          options: args,
+          path: controller.text,
+        );
+      } catch (e) {
+        error = e.toString();
+      }
+      if (error.isNotEmpty && mounted) {
+        showProgress.value = false;
+        btnEnabled.value = true;
+        showToast(error);
+      }
     }
 
     do_install();

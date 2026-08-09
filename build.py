@@ -293,13 +293,13 @@ def generate_control_file(version):
     control_file_path = "../res/DEBIAN/control"
     system2('/bin/rm -rf %s' % control_file_path)
 
-    content = """Package: rustdesk
+    content = """Package: subnetdesk
 Section: net
 Priority: optional
 Version: %s
 Architecture: %s
-Maintainer: rustdesk <info@rustdesk.com>
-Homepage: https://rustdesk.com
+Maintainer: SubnetDesk contributors
+Homepage: https://github.com/zibo-chen/SubnetDesk
 Depends: libgtk-3-0t64 | libgtk-3-0, libxcb-randr0, libxdo3 | libxdo4, libxfixes3, libxcb-shape0, libxcb-xfixes0, libasound2t64 | libasound2, libsystemd0, curl, libva2, libva-drm2, libva-x11-2, libgstreamer-plugins-base1.0-0, libpam0g, gstreamer1.0-pipewire%s
 Recommends: libayatana-appindicator3-1
 Description: A remote control software.
@@ -323,82 +323,82 @@ def build_flutter_deb(version, features):
     os.chdir('flutter')
     system2('flutter build linux --release')
     system2('mkdir -p tmpdeb/usr/bin/')
-    system2('mkdir -p tmpdeb/usr/share/rustdesk')
-    system2('mkdir -p tmpdeb/etc/rustdesk/')
+    system2('mkdir -p tmpdeb/usr/share/subnetdesk')
+    system2('mkdir -p tmpdeb/etc/subnetdesk/')
     system2('mkdir -p tmpdeb/etc/pam.d/')
-    system2('mkdir -p tmpdeb/usr/share/rustdesk/files/systemd/')
+    system2('mkdir -p tmpdeb/usr/share/subnetdesk/files/systemd/')
     system2('mkdir -p tmpdeb/usr/share/icons/hicolor/256x256/apps/')
     system2('mkdir -p tmpdeb/usr/share/icons/hicolor/scalable/apps/')
     system2('mkdir -p tmpdeb/usr/share/applications/')
     system2('mkdir -p tmpdeb/usr/share/polkit-1/actions')
-    system2('rm tmpdeb/usr/bin/rustdesk || true')
+    system2('rm tmpdeb/usr/bin/subnetdesk || true')
     system2(
-        f'cp -r {flutter_build_dir}/* tmpdeb/usr/share/rustdesk/')
+        f'cp -r {flutter_build_dir}/* tmpdeb/usr/share/subnetdesk/')
     system2(
-        'cp ../res/subnetdesk.service tmpdeb/usr/share/rustdesk/files/systemd/')
+        'cp ../res/subnetdesk.service tmpdeb/usr/share/subnetdesk/files/systemd/')
     system2(
-        'cp ../res/128x128@2x.png tmpdeb/usr/share/icons/hicolor/256x256/apps/rustdesk.png')
+        'cp ../res/128x128@2x.png tmpdeb/usr/share/icons/hicolor/256x256/apps/subnetdesk.png')
     system2(
-        'cp ../res/scalable.svg tmpdeb/usr/share/icons/hicolor/scalable/apps/rustdesk.svg')
+        'cp ../res/scalable.svg tmpdeb/usr/share/icons/hicolor/scalable/apps/subnetdesk.svg')
     system2(
-        'cp ../res/rustdesk.desktop tmpdeb/usr/share/applications/rustdesk.desktop')
+        'cp ../res/rustdesk.desktop tmpdeb/usr/share/applications/subnetdesk.desktop')
     system2(
-        'cp ../res/rustdesk-link.desktop tmpdeb/usr/share/applications/rustdesk-link.desktop')
+        'cp ../res/rustdesk-link.desktop tmpdeb/usr/share/applications/subnetdesk-link.desktop')
     system2(
-        'cp ../res/startwm.sh tmpdeb/etc/rustdesk/')
+        'cp ../res/startwm.sh tmpdeb/etc/subnetdesk/')
     system2(
-        'cp ../res/xorg.conf tmpdeb/etc/rustdesk/')
+        'cp ../res/xorg.conf tmpdeb/etc/subnetdesk/')
     system2(
-        'cp ../res/pam.d/rustdesk.debian tmpdeb/etc/pam.d/rustdesk')
+        'cp ../res/pam.d/rustdesk.debian tmpdeb/etc/pam.d/subnetdesk')
     system2(
-        "echo \"#!/bin/sh\" >> tmpdeb/usr/share/rustdesk/files/polkit && chmod a+x tmpdeb/usr/share/rustdesk/files/polkit")
+        "echo \"#!/bin/sh\" >> tmpdeb/usr/share/subnetdesk/files/polkit && chmod a+x tmpdeb/usr/share/subnetdesk/files/polkit")
 
     system2('mkdir -p tmpdeb/DEBIAN')
     generate_control_file(version)
     system2('cp -a ../res/DEBIAN/* tmpdeb/DEBIAN/')
     md5_file_folder("tmpdeb/")
-    system2('dpkg-deb -b tmpdeb rustdesk.deb;')
+    system2('dpkg-deb -b tmpdeb subnetdesk.deb;')
 
     system2('/bin/rm -rf tmpdeb/')
     system2('/bin/rm -rf ../res/DEBIAN/control')
-    os.rename('rustdesk.deb', '../subnetdesk-%s.deb' % version)
+    os.rename('subnetdesk.deb', '../subnetdesk-%s.deb' % version)
     os.chdir("..")
 
 
 def build_deb_from_folder(version, binary_folder):
     os.chdir('flutter')
     system2('mkdir -p tmpdeb/usr/bin/')
-    system2('mkdir -p tmpdeb/usr/share/rustdesk')
-    system2('mkdir -p tmpdeb/usr/share/rustdesk/files/systemd/')
+    system2('mkdir -p tmpdeb/usr/share/subnetdesk')
+    system2('mkdir -p tmpdeb/usr/share/subnetdesk/files/systemd/')
     system2('mkdir -p tmpdeb/usr/share/icons/hicolor/256x256/apps/')
     system2('mkdir -p tmpdeb/usr/share/icons/hicolor/scalable/apps/')
     system2('mkdir -p tmpdeb/usr/share/applications/')
     system2('mkdir -p tmpdeb/usr/share/polkit-1/actions')
-    system2('rm tmpdeb/usr/bin/rustdesk || true')
+    system2('rm tmpdeb/usr/bin/subnetdesk || true')
     system2(
-        f'cp -r ../{binary_folder}/* tmpdeb/usr/share/rustdesk/')
+        f'cp -r ../{binary_folder}/* tmpdeb/usr/share/subnetdesk/')
     system2(
-        'cp ../res/subnetdesk.service tmpdeb/usr/share/rustdesk/files/systemd/')
+        'cp ../res/subnetdesk.service tmpdeb/usr/share/subnetdesk/files/systemd/')
     system2(
-        'cp ../res/128x128@2x.png tmpdeb/usr/share/icons/hicolor/256x256/apps/rustdesk.png')
+        'cp ../res/128x128@2x.png tmpdeb/usr/share/icons/hicolor/256x256/apps/subnetdesk.png')
     system2(
-        'cp ../res/scalable.svg tmpdeb/usr/share/icons/hicolor/scalable/apps/rustdesk.svg')
+        'cp ../res/scalable.svg tmpdeb/usr/share/icons/hicolor/scalable/apps/subnetdesk.svg')
     system2(
-        'cp ../res/rustdesk.desktop tmpdeb/usr/share/applications/rustdesk.desktop')
+        'cp ../res/rustdesk.desktop tmpdeb/usr/share/applications/subnetdesk.desktop')
     system2(
-        'cp ../res/rustdesk-link.desktop tmpdeb/usr/share/applications/rustdesk-link.desktop')
+        'cp ../res/rustdesk-link.desktop tmpdeb/usr/share/applications/subnetdesk-link.desktop')
     system2(
-        "echo \"#!/bin/sh\" >> tmpdeb/usr/share/rustdesk/files/polkit && chmod a+x tmpdeb/usr/share/rustdesk/files/polkit")
+        "echo \"#!/bin/sh\" >> tmpdeb/usr/share/subnetdesk/files/polkit && chmod a+x tmpdeb/usr/share/subnetdesk/files/polkit")
 
     system2('mkdir -p tmpdeb/DEBIAN')
     generate_control_file(version)
     system2('cp -a ../res/DEBIAN/* tmpdeb/DEBIAN/')
     md5_file_folder("tmpdeb/")
-    system2('dpkg-deb -b tmpdeb rustdesk.deb;')
+    system2('dpkg-deb -b tmpdeb subnetdesk.deb;')
 
     system2('/bin/rm -rf tmpdeb/')
     system2('/bin/rm -rf ../res/DEBIAN/control')
-    os.rename('rustdesk.deb', '../subnetdesk-%s.deb' % version)
+    os.rename('subnetdesk.deb', '../subnetdesk-%s.deb' % version)
     os.chdir("..")
 
 
@@ -551,7 +551,7 @@ def main():
             "sed -i 's/Version:    .*/Version:    %s/g' res/rpm.spec" % version)
         system2('HBB=`pwd` rpmbuild -ba res/rpm.spec')
         system2(
-            'mv $HOME/rpmbuild/RPMS/x86_64/rustdesk-%s-0.x86_64.rpm ./subnetdesk-%s-fedora28-centos8.rpm' % (
+            'mv $HOME/rpmbuild/RPMS/x86_64/subnetdesk-%s-0.x86_64.rpm ./subnetdesk-%s-fedora28-centos8.rpm' % (
                 version, version))
         # yum localinstall rustdesk.rpm
     elif os.path.isfile('/usr/bin/zypper'):
@@ -561,7 +561,7 @@ def main():
             "sed -i 's/Version:    .*/Version:    %s/g' res/rpm-suse.spec" % version)
         system2('HBB=`pwd` rpmbuild -ba res/rpm-suse.spec')
         system2(
-            'mv $HOME/rpmbuild/RPMS/x86_64/rustdesk-%s-0.x86_64.rpm ./subnetdesk-%s-suse.rpm' % (
+            'mv $HOME/rpmbuild/RPMS/x86_64/subnetdesk-%s-0.x86_64.rpm ./subnetdesk-%s-suse.rpm' % (
                 version, version))
         # yum localinstall rustdesk.rpm
     else:
@@ -619,33 +619,35 @@ def main():
                 system2(
                     'mv target/release/bundle/deb/rustdesk*.deb ./rustdesk.deb')
                 system2('dpkg-deb -R rustdesk.deb tmpdeb')
-                system2('mkdir -p tmpdeb/usr/share/rustdesk/files/systemd/')
+                system2("sed -i 's/^Package: .*/Package: subnetdesk/' tmpdeb/DEBIAN/control")
+                system2('mkdir -p tmpdeb/usr/share/subnetdesk/files/systemd/')
                 system2('mkdir -p tmpdeb/usr/share/icons/hicolor/256x256/apps/')
                 system2('mkdir -p tmpdeb/usr/share/icons/hicolor/scalable/apps/')
                 system2(
-                    'cp res/subnetdesk.service tmpdeb/usr/share/rustdesk/files/systemd/')
+                    'cp res/subnetdesk.service tmpdeb/usr/share/subnetdesk/files/systemd/')
                 system2(
-                    'cp res/128x128@2x.png tmpdeb/usr/share/icons/hicolor/256x256/apps/rustdesk.png')
+                    'cp res/128x128@2x.png tmpdeb/usr/share/icons/hicolor/256x256/apps/subnetdesk.png')
                 system2(
-                    'cp res/scalable.svg tmpdeb/usr/share/icons/hicolor/scalable/apps/rustdesk.svg')
+                    'cp res/scalable.svg tmpdeb/usr/share/icons/hicolor/scalable/apps/subnetdesk.svg')
                 system2(
-                    'cp res/rustdesk.desktop tmpdeb/usr/share/applications/rustdesk.desktop')
+                    'cp res/rustdesk.desktop tmpdeb/usr/share/applications/subnetdesk.desktop')
                 system2(
-                    'cp res/rustdesk-link.desktop tmpdeb/usr/share/applications/rustdesk-link.desktop')
-                os.system('mkdir -p tmpdeb/etc/rustdesk/')
-                os.system('cp -a res/startwm.sh tmpdeb/etc/rustdesk/')
-                os.system('mkdir -p tmpdeb/etc/X11/rustdesk/')
-                os.system('cp res/xorg.conf tmpdeb/etc/X11/rustdesk/')
-                os.system('cp -a DEBIAN/* tmpdeb/DEBIAN/')
+                    'cp res/rustdesk-link.desktop tmpdeb/usr/share/applications/subnetdesk-link.desktop')
+                os.system('mkdir -p tmpdeb/etc/subnetdesk/')
+                os.system('cp -a res/startwm.sh tmpdeb/etc/subnetdesk/')
+                os.system('mkdir -p tmpdeb/etc/X11/subnetdesk/')
+                os.system('cp res/xorg.conf tmpdeb/etc/X11/subnetdesk/')
+                os.system('cp -a res/DEBIAN/* tmpdeb/DEBIAN/')
+                system2("sed -i 's/^Package: .*/Package: subnetdesk/' tmpdeb/DEBIAN/control")
                 os.system('mkdir -p tmpdeb/etc/pam.d/')
-                os.system('cp pam.d/rustdesk.debian tmpdeb/etc/pam.d/rustdesk')
+                os.system('cp pam.d/rustdesk.debian tmpdeb/etc/pam.d/subnetdesk')
                 system2('strip tmpdeb/usr/bin/rustdesk')
-                system2('mkdir -p tmpdeb/usr/share/rustdesk')
-                system2('mv tmpdeb/usr/bin/rustdesk tmpdeb/usr/share/rustdesk/')
-                system2('cp libsciter-gtk.so tmpdeb/usr/share/rustdesk/')
+                system2('mkdir -p tmpdeb/usr/share/subnetdesk')
+                system2('mv tmpdeb/usr/bin/rustdesk tmpdeb/usr/share/subnetdesk/subnetdesk')
+                system2('cp libsciter-gtk.so tmpdeb/usr/share/subnetdesk/')
                 md5_file_folder("tmpdeb/")
-                system2('dpkg-deb -b tmpdeb rustdesk.deb; /bin/rm -rf tmpdeb/')
-                os.rename('rustdesk.deb', 'subnetdesk-%s.deb' % version)
+                system2('dpkg-deb -b tmpdeb subnetdesk.deb; /bin/rm -rf tmpdeb/')
+                os.rename('subnetdesk.deb', 'subnetdesk-%s.deb' % version)
 
 
 def md5_file(fn):

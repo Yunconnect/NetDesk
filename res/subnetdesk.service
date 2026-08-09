@@ -5,10 +5,8 @@ After=systemd-user-sessions.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/rustdesk --service
-# Kill the internally named --tray and --server processes as well.
-ExecStop=/usr/bin/pkill -f "rustdesk --"
-# The packaged executable keeps its internal rustdesk filename for compatibility.
+ExecStart=/usr/bin/subnetdesk --service
+ExecStop=/usr/bin/pkill -f "subnetdesk --"
 PIDFile=/run/subnetdesk.pid
 KillMode=mixed
 TimeoutStopSec=30

@@ -58,7 +58,7 @@ pub const PLATFORM_ANDROID: &str = "Android";
 pub const TIMER_OUT: Duration = Duration::from_secs(1);
 pub const DEFAULT_KEEP_ALIVE: i32 = 60_000;
 
-const MIN_VER_MULTI_UI_SESSION: &str = "1.2.4";
+const MIN_VER_MULTI_UI_SESSION: &str = "1.2.1";
 
 pub mod input {
     pub const MOUSE_TYPE_MOVE: i32 = 0;
@@ -162,7 +162,7 @@ pub fn is_support_file_paste_if_macos(ver: &str) -> bool {
 
 #[inline]
 pub fn is_support_screenshot(ver: &str) -> bool {
-    is_support_multi_ui_session_num(hbb_common::get_version_number(ver))
+    is_support_screenshot_num(hbb_common::get_version_number(ver))
 }
 
 #[inline]
@@ -178,6 +178,23 @@ pub fn is_support_file_transfer_resume(ver: &str) -> bool {
 #[inline]
 pub fn is_support_file_transfer_resume_num(ver: i64) -> bool {
     ver >= hbb_common::get_version_number("1.4.2")
+}
+
+#[cfg(test)]
+mod subnetdesk_capability_tests {
+    use super::*;
+
+    #[test]
+    fn current_subnetdesk_release_supports_multiple_displays() {
+        assert!(is_support_multi_ui_session("1.2.1"));
+        assert!(!is_support_multi_ui_session("1.2.0"));
+    }
+
+    #[test]
+    fn screenshot_keeps_its_independent_version_gate() {
+        assert!(!is_support_screenshot("1.2.1"));
+        assert!(is_support_screenshot("1.4.0"));
+    }
 }
 
 /// Minimum server version required for relative mouse mode support.

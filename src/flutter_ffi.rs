@@ -42,14 +42,14 @@ mod lan_server_info_tests {
     use super::{lan_server_running_for_ui, should_sync_lan_settings_to_background};
 
     #[test]
-    fn configured_enabled_service_is_ready_in_a_separate_ui_process() {
-        assert!(lan_server_running_for_ui(true, false));
+    fn reports_cached_background_listener_status() {
+        assert!(lan_server_running_for_ui(1));
     }
 
     #[test]
-    fn missing_credentials_or_stopped_service_is_not_ready() {
-        assert!(!lan_server_running_for_ui(false, false));
-        assert!(!lan_server_running_for_ui(true, true));
+    fn non_positive_background_status_is_not_ready() {
+        assert!(!lan_server_running_for_ui(0));
+        assert!(!lan_server_running_for_ui(-1));
     }
 
     #[cfg(target_os = "macos")]
@@ -1147,20 +1147,20 @@ pub fn main_import_legacy_lan_credential(
 }
 
 pub fn main_get_connect_status() -> String {
-    let configured = Config::lan_credentials_configured();
-    let service_stopped = config::option2bool(
-        "stop-service",
-        &Config::get_option_from_file("stop-service"),
-    );
-    let status_num = if lan_server_running_for_ui(configured, service_stopped) {
-        1
-    } else {
-        -1
-    };
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    let video_conn_count = get_connect_status().video_conn_count;
+    let (status_num, video_conn_count) = {
+        let status = get_connect_status();
+        (status.status_num, status.video_conn_count)
+    };
     #[cfg(any(target_os = "android", target_os = "ios"))]
-    let video_conn_count = 0usize;
+    let (status_num, video_conn_count) = (
+        if crate::lan_server::LanServer::is_running() {
+            1
+        } else {
+            -1
+        },
+        0usize,
+    );
     serde_json::json!({
         "status_num": status_num,
         "video_conn_count": video_conn_count,
@@ -1674,11 +1674,10 @@ pub fn main_get_lan_server_info_sync() -> SyncReturn<String> {
 
 fn lan_server_info() -> String {
     let configured = Config::lan_credentials_configured();
-    let service_stopped = config::option2bool(
-        "stop-service",
-        &Config::get_option_from_file("stop-service"),
-    );
-    let running = lan_server_running_for_ui(configured, service_stopped);
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let running = lan_server_running_for_ui(get_connect_status().status_num);
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let running = crate::lan_server::LanServer::is_running();
     #[cfg(not(target_os = "ios"))]
     let configured_listen_addresses: std::collections::HashSet<String> =
         Config::get_option("lan-listen-addresses")
@@ -1688,31 +1687,16 @@ fn lan_server_info() -> String {
             .map(ToOwned::to_owned)
             .collect();
     #[cfg(not(target_os = "ios"))]
-    let addresses: Vec<String> = default_net::get_interfaces()
+    let addresses: Vec<String> = crate::lan::local_connectable_addresses()
         .into_iter()
-        .flat_map(|interface| {
-            interface
-                .ipv4
-                .into_iter()
-                .map(|network| network.addr.to_string())
-                .chain(
-                    interface
-                        .ipv6
-                        .into_iter()
-                        .map(|network| network.addr.to_string()),
-                )
-        })
-        .filter(|address| address != "0.0.0.0" && address != "::")
         .filter(|address| {
             if configured_listen_addresses.is_empty() {
-                address
-                    .parse()
-                    .map(crate::lan_server::source_allowed)
-                    .unwrap_or(false)
+                crate::lan_server::source_allowed(*address)
             } else {
-                configured_listen_addresses.contains(address)
+                configured_listen_addresses.contains(&address.to_string())
             }
         })
+        .map(|address| address.to_string())
         .collect();
     #[cfg(target_os = "ios")]
     let addresses: Vec<String> = Vec::new();
@@ -1768,8 +1752,8 @@ fn lan_server_info() -> String {
     data.to_string()
 }
 
-fn lan_server_running_for_ui(configured: bool, service_stopped: bool) -> bool {
-    configured && !service_stopped
+fn lan_server_running_for_ui(status_num: i32) -> bool {
+    status_num > 0
 }
 
 fn should_sync_lan_settings_to_background() -> bool {
@@ -2378,8 +2362,28 @@ pub fn install_run_without_install() {
     run_without_install();
 }
 
-pub fn install_install_me(options: String, path: String) {
-    install_me(options, path, false, false);
+pub fn install_install_me(options: String, path: String) -> String {
+    #[cfg(windows)]
+    {
+        match crate::platform::windows::install_me(&options, path, false, false) {
+            Ok(()) => {
+                std::thread::spawn(|| {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    std::process::exit(0);
+                });
+                String::new()
+            }
+            Err(err) => {
+                log::error!("Failed to launch SubnetDesk installation: {err}");
+                err.to_string()
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (options, path);
+        "Installation from the portable application is only supported on Windows".to_owned()
+    }
 }
 
 pub fn install_install_path() -> SyncReturn<String> {

@@ -7,9 +7,7 @@ case $1 in
 		INITSYS=$(ls -al /proc/1/exe | awk -F' ' '{print $NF}' | awk -F'/' '{print $NF}')
 		if [ "systemd" == "${INITSYS}" ]; then
 			systemctl stop subnetdesk || true
-			# Stop the legacy unit during upgrades from older SubnetDesk packages.
-			systemctl stop rustdesk || true
-      sleep 1
+			sleep 1
       rm -rf /usr/bin/libsciter-gtk.so
 		fi
         ;;
