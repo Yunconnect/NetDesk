@@ -1,6 +1,6 @@
 use hbb_common::{
     anyhow::anyhow,
-    config::{self, Config, DiscoveryPeer},
+    config::{Config, DiscoveryPeer},
     lan::{device_fingerprint, DEFAULT_PORT, PROTOCOL_VERSION},
     log,
     tokio::sync::mpsc::UnboundedSender,
@@ -30,8 +30,7 @@ struct Announcement {
 impl Announcement {
     fn current() -> Option<Self> {
         if Config::get_option("lan-discovery-enabled") == "N"
-            || !Config::lan_credentials_configured()
-            || config::option2bool("stop-service", &Config::get_option("stop-service"))
+            || !crate::lan_server::LanServer::is_discoverable()
         {
             return None;
         }
@@ -187,20 +186,8 @@ fn advertised_addresses() -> Vec<IpAddr> {
         .filter_map(|value| value.trim().parse::<IpAddr>().ok())
         .collect::<BTreeSet<_>>();
 
-    default_net::get_interfaces()
+    crate::lan::local_connectable_addresses()
         .into_iter()
-        .flat_map(|interface| {
-            interface
-                .ipv4
-                .into_iter()
-                .map(|network| IpAddr::V4(network.addr))
-                .chain(
-                    interface
-                        .ipv6
-                        .into_iter()
-                        .map(|network| IpAddr::V6(network.addr)),
-                )
-        })
         .filter(|address| address_is_listened_on(*address, &configured))
         .filter(|address| connectable_address(*address))
         .collect::<BTreeSet<_>>()

@@ -1599,8 +1599,8 @@ jobs:
             esac
             HBB=`pwd` rpmbuild ./res/rpm-flutter.spec -bb
             pushd ~/rpmbuild/RPMS/${{ matrix.job.arch }}
-            for name in rustdesk*??.rpm; do
-                mv "$name" /workspace/"subnetdesk-${name#rustdesk-}"
+            for name in subnetdesk-*.rpm; do
+                mv "$name" /workspace/"$name"
             done
 
             # rpm suse package
@@ -1613,8 +1613,8 @@ jobs:
             esac
             HBB=`pwd` rpmbuild ./res/rpm-flutter-suse.spec -bb
             pushd ~/rpmbuild/RPMS/${{ matrix.job.arch }}
-            for name in rustdesk*??.rpm; do
-                base="${name#rustdesk-}"
+            for name in subnetdesk-*.rpm; do
+                base="${name#subnetdesk-}"
                 mv "$name" "/workspace/subnetdesk-${base%%.rpm}-suse.rpm"
             done
 
@@ -1661,8 +1661,7 @@ jobs:
           packages:
           scripts: >-
             cd res &&
-            HBB="$(pwd)/.." FLUTTER=1 makepkg -f &&
-            for name in rustdesk-*.pkg.tar.zst; do mv "$name" "subnetdesk-${name#rustdesk-}"; done
+            HBB="$(pwd)/.." FLUTTER=1 makepkg -f
 
       - name: Upload Arch Linux package
         if: matrix.job.arch == 'x86_64' && env.UPLOAD_ARTIFACT == 'true'
@@ -1887,7 +1886,7 @@ jobs:
       - name: Rename SubnetDesk
         shell: bash
         run: |
-          for name in rustdesk*??.deb; do
+          for name in subnetdesk-*.deb; do
               # use cp to duplicate deb files to fit other packages.
               cp "$name" "${name%%.deb}-${{ matrix.job.arch }}-sciter.deb"
           done
@@ -1934,7 +1933,7 @@ jobs:
 
       - name: Rename Binary
         run: |
-          mv subnetdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.deb appimage/rustdesk.deb
+          mv subnetdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.deb appimage/subnetdesk.deb
 
       - name: Build appimage package
         shell: bash
@@ -1950,9 +1949,6 @@ jobs:
           # run appimage-builder
           pushd appimage
           sudo appimage-builder --skip-tests --recipe ./AppImageBuilder-${{ matrix.job.arch }}.yml
-          for name in rustdesk-*.AppImage; do
-            sudo mv "$name" "subnetdesk-${name#rustdesk-}"
-          done
           sudo chown "$(id -u):$(id -g)" subnetdesk-*.AppImage
 
       - name: Publish appimage package
@@ -2012,7 +2008,7 @@ jobs:
 
       - name: Rename Binary
         run: |
-          mv subnetdesk-${{ env.VERSION }}-${{ matrix.job.arch }}${{ matrix.job.suffix }}.deb flatpak/rustdesk.deb
+          mv subnetdesk-${{ env.VERSION }}-${{ matrix.job.arch }}${{ matrix.job.suffix }}.deb flatpak/subnetdesk.deb
 
       - uses: rustdesk-org/run-on-arch-action@d3fcfbb632b84cf7f6bc772bfaaa2c2f4f8789a8 # no release tag; commit 2026-05-26
         name: Build SubnetDesk flatpak package for ${{ matrix.job.arch }}

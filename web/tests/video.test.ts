@@ -1,8 +1,48 @@
 import { describe, expect, test } from "bun:test";
 import { VideoFrame } from "../src/generated/message";
-import { decodeVideoBatch, initialVideoDecodeState } from "../src/video";
+import {
+  closeVideoDecoder,
+  decodeVideoBatch,
+  initialDecoderRecoveryState,
+  initialVideoDecodeState,
+  requestDecoderRecovery,
+} from "../src/video";
 
 describe("WebCodecs video queue", () => {
+  test("allows one decoder rebuild and then stops retrying", () => {
+    const first = requestDecoderRecovery(initialDecoderRecoveryState());
+    expect(first.shouldRetry).toBe(true);
+    expect(first.state.attempts).toBe(1);
+
+    const second = requestDecoderRecovery(first.state);
+    expect(second.shouldRetry).toBe(false);
+    expect(second.state.attempts).toBe(1);
+  });
+
+  test("does not close a decoder that WebCodecs has already closed", () => {
+    let closeCalls = 0;
+    closeVideoDecoder({
+      state: "closed",
+      close: () => {
+        closeCalls += 1;
+      },
+    });
+
+    expect(closeCalls).toBe(0);
+  });
+
+  test("closes a configured decoder during normal cleanup", () => {
+    let closeCalls = 0;
+    closeVideoDecoder({
+      state: "configured",
+      close: () => {
+        closeCalls += 1;
+      },
+    });
+
+    expect(closeCalls).toBe(1);
+  });
+
   test("keeps the decoder open between a key-frame batch and following delta frames", () => {
     const decoded: EncodedVideoChunkInit[] = [];
     let flushCalls = 0;

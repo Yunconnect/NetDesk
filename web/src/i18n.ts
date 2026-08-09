@@ -43,9 +43,10 @@ const messages = {
     clipboardWritePermission: "浏览器需要剪贴板写入权限",
     remoteClipboardPermission: "已收到远端剪贴板；浏览器需要写入权限",
     noCodec: "浏览器没有可用的视频解码器",
-    noDisplay: "远端没有可用显示器",
+    noDisplay: "远端没有活动显示器；请连接显示器或在 Windows Server 安装并启用虚拟显示器驱动",
     canvasUnavailable: "浏览器无法创建画布",
     decoderFailed: "视频解码失败",
+    decoderRecovering: "视频解码异常，正在重建解码器并请求关键帧",
     webCodecsUnsupported: "当前浏览器不支持 WebCodecs，请使用最新版 Chrome 或 Edge",
     codecUnsupported: "浏览器不支持主机提供的视频编码，请更新浏览器或启用硬件解码",
     unknownError: "未知错误",
@@ -94,9 +95,11 @@ const messages = {
     remoteClipboardPermission:
       "Remote clipboard received; browser clipboard write permission is required",
     noCodec: "No supported browser video decoder is available",
-    noDisplay: "The remote computer has no available display",
+    noDisplay:
+      "The remote computer has no active display; connect a monitor or install and enable a virtual display driver on Windows Server",
     canvasUnavailable: "The browser could not create the display canvas",
     decoderFailed: "Video decoding failed",
+    decoderRecovering: "Video decoding failed; rebuilding the decoder and requesting a key frame",
     webCodecsUnsupported:
       "This browser does not support WebCodecs; use the latest Chrome or Edge",
     codecUnsupported:

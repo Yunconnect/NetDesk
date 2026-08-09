@@ -21,8 +21,12 @@ import {
 import { mapCanvasPoint, mouseMask, normalizeFingerprint } from "./protocol";
 import { localizeDocument, translate, type TranslationKey } from "./i18n";
 import {
+  closeVideoDecoder,
   decodeVideoBatch,
+  initialDecoderRecoveryState,
   initialVideoDecodeState,
+  requestDecoderRecovery,
+  type DecoderRecoveryState,
   type VideoDecodeState,
 } from "./video";
 
@@ -97,6 +101,8 @@ let renderedFrames = 0;
 let displayedFps = 0;
 let videoAckPending = false;
 let lastRemoteClipboard = "";
+let decoderRecoveryState: DecoderRecoveryState = initialDecoderRecoveryState();
+let firstDecoderError = "";
 
 function setStatus(message: string, error = false): void {
   statusElement.textContent = message;
@@ -109,7 +115,7 @@ function resetConnection(message = t("disconnected")): void {
   cryptoSession = undefined;
   connectButton.disabled = false;
   socket = undefined;
-  decoder?.close();
+  closeVideoDecoder(decoder);
   decoder = undefined;
   videoWorker?.postMessage({ type: "reset" });
   remoteDisplay = undefined;
@@ -125,6 +131,8 @@ function resetConnection(message = t("disconnected")): void {
   lastFrameRenderedAt = 0;
   videoAckPending = false;
   lastRemoteClipboard = "";
+  decoderRecoveryState = initialDecoderRecoveryState();
+  firstDecoderError = "";
   viewerPanel.hidden = true;
   connectPanel.hidden = false;
   viewerStatus.textContent = "";
@@ -288,6 +296,33 @@ function sendVideoAck(): void {
   }
 }
 
+function decoderErrorMessage(message: string, mode: "worker" | "main"): string {
+  const codec = selectedCodec?.codec ?? "unknown";
+  const dimensions = remoteDisplay ? `${remoteDisplay.width}x${remoteDisplay.height}` : "unknown";
+  return `${message} [codec=${codec}, size=${dimensions}, mode=${mode}]`;
+}
+
+function recoverDecoder(message: string, mode: "worker" | "main"): void {
+  const detailed = decoderErrorMessage(message, mode);
+  if (!firstDecoderError) firstDecoderError = detailed;
+  const recovery = requestDecoderRecovery(decoderRecoveryState);
+  decoderRecoveryState = recovery.state;
+  if (!recovery.shouldRetry || !peerInfo) {
+    const history = firstDecoderError === detailed ? detailed : `${firstDecoderError}; retry: ${detailed}`;
+    closeConnection(`${t("decoderFailed")}: ${history}`);
+    return;
+  }
+  viewerStatus.textContent = `${t("decoderRecovering")}: ${detailed}`;
+  try {
+    configureDecoder(peerInfo, true);
+    send(Message.create({ misc: { refresh_video: true } }));
+    sendVideoAck();
+  } catch (error) {
+    const recoveryError = error instanceof Error ? error.message : t("unknownError");
+    closeConnection(`${t("decoderFailed")}: ${firstDecoderError}; recovery: ${recoveryError}`);
+  }
+}
+
 function configureVideoWorker(codec: SelectedVideoCodec, display: DisplayInfo): boolean {
   if (
     !serverInfo.video_worker_url ||
@@ -313,10 +348,10 @@ function configureVideoWorker(codec: SelectedVideoCodec, display: DisplayInfo): 
         connectionStats.textContent =
           `${event.data.fps ?? 0} FPS · ${event.data.droppedFrames ?? 0} dropped · ${selectedCodec?.protocol.toUpperCase() ?? ""}`;
       } else {
-        closeConnection(`${t("decoderFailed")}: ${event.data.message ?? t("unknownError")}`);
+        recoverDecoder(event.data.message ?? t("unknownError"), "worker");
       }
     });
-    videoWorker.addEventListener("error", () => closeConnection(t("decoderFailed")));
+    videoWorker.addEventListener("error", () => recoverDecoder(t("unknownError"), "worker"));
   }
   const message = {
     type: "initialize",
@@ -343,18 +378,22 @@ function videoFrameTransferables(frame: NonNullable<Message["video_frame"]>): Tr
   return [...buffers];
 }
 
-function configureDecoder(peer: PeerInfo): void {
+function configureDecoder(peer: PeerInfo, recovering = false): void {
   if (!selectedCodec) throw new Error(t("noCodec"));
   const codec = selectedCodec;
   peerInfo = peer;
   const display = peer.displays[peer.current_display] ?? peer.displays[0];
   if (!display) throw new Error(t("noDisplay"));
+  if (!recovering) {
+    decoderRecoveryState = initialDecoderRecoveryState();
+    firstDecoderError = "";
+  }
   remoteDisplay = display;
   if (!canvasTransferred) {
     canvas.width = display.width;
     canvas.height = display.height;
   }
-  decoder?.close();
+  closeVideoDecoder(decoder);
   decoder = undefined;
   videoAckPending = false;
   videoDecodeState = initialVideoDecodeState(codec.protocol);
@@ -382,7 +421,7 @@ function configureDecoder(peer: PeerInfo): void {
         sendVideoAck();
       }
     },
-    error: (error) => closeConnection(`${t("decoderFailed")}: ${error.message}`),
+    error: (error) => recoverDecoder(error.message, "main"),
   });
   decoder.configure({
     codec: codec.codec,

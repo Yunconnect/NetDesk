@@ -33,6 +33,10 @@ impl LanServer {
         ACTIVE_LISTENERS.load(Ordering::SeqCst) > 0
     }
 
+    pub(crate) fn is_discoverable() -> bool {
+        discoverable_state(Self::is_running(), service_ready())
+    }
+
     #[cfg(not(target_os = "ios"))]
     pub async fn start() {
         let server = new_server();
@@ -45,15 +49,16 @@ impl LanServer {
                 continue;
             }
             let (stop_tx, stop_rx) = watch::channel(false);
-            let handles = match bind_listeners(server.clone(), stop_rx).await {
-                Ok(handles) => handles,
-                Err(err) => {
-                    log::error!("Failed to start LAN server: {err}");
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                    continue;
-                }
-            };
-            ACTIVE_LISTENERS.store(handles.len(), Ordering::SeqCst);
+            let (handles, native_listener_count) =
+                match bind_listeners(server.clone(), stop_rx).await {
+                    Ok(result) => result,
+                    Err(err) => {
+                        log::error!("Failed to start LAN server: {err}");
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        continue;
+                    }
+                };
+            ACTIVE_LISTENERS.store(native_listener_count, Ordering::SeqCst);
             loop {
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 if generation != RESTART_GENERATION.load(Ordering::SeqCst)
@@ -115,6 +120,10 @@ fn service_ready() -> bool {
         && !option2bool("stop-service", &Config::get_option("stop-service"))
 }
 
+fn discoverable_state(running: bool, ready: bool) -> bool {
+    running && ready
+}
+
 fn listen_port() -> u16 {
     Config::get_option("lan-listen-port")
         .parse::<u16>()
@@ -170,7 +179,7 @@ fn listener_signature() -> (
 async fn bind_listeners(
     server: ServerPtr,
     stop_rx: watch::Receiver<bool>,
-) -> ResultType<Vec<tokio::task::JoinHandle<()>>> {
+) -> ResultType<(Vec<tokio::task::JoinHandle<()>>, usize)> {
     let port = listen_port();
     let addresses = listen_addresses();
     let mut listeners = Vec::new();
@@ -196,7 +205,8 @@ async fn bind_listeners(
     };
     #[cfg(any(target_os = "android", target_os = "ios"))]
     let mut handles = Vec::new();
-    handles.reserve(listeners.len());
+    let native_listener_count = listeners.len();
+    handles.reserve(native_listener_count);
     for listener in listeners {
         let server = server.clone();
         let mut stop_rx = stop_rx.clone();
@@ -245,7 +255,7 @@ async fn bind_listeners(
             }
         }));
     }
-    Ok(handles)
+    Ok((handles, native_listener_count))
 }
 
 pub fn source_allowed(ip: IpAddr) -> bool {
@@ -350,5 +360,13 @@ mod tests {
         );
         assert!(normalize_listen_addresses("host.lan").is_err());
         assert!(normalize_allowed_networks("192.168.1.1").is_err());
+    }
+
+    #[test]
+    fn discovery_requires_an_active_ready_listener() {
+        assert!(discoverable_state(true, true));
+        assert!(!discoverable_state(false, true));
+        assert!(!discoverable_state(true, false));
+        assert!(!discoverable_state(false, false));
     }
 }

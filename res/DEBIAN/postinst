@@ -5,18 +5,11 @@ set -e
 if [ "$1" = configure ]; then
 
 	INITSYS=$(ls -al /proc/1/exe | awk -F' ' '{print $NF}' | awk -F'/' '{print $NF}')
-	ln -f -s /usr/share/rustdesk/rustdesk /usr/bin/rustdesk
+	ln -f -s /usr/share/subnetdesk/subnetdesk /usr/bin/subnetdesk
 
 	if [ "systemd" == "$INITSYS" ]; then
-		# Remove the unit shipped by pre-SubnetDesk Linux packages. Keeping it
-		# enabled would make UI service controls target a different unit name.
-		systemctl stop rustdesk.service >/dev/null 2>&1 || true
-		systemctl disable rustdesk.service >/dev/null 2>&1 || true
-		rm -f /etc/systemd/system/rustdesk.service \
-			/usr/lib/systemd/system/rustdesk.service \
-			/usr/lib/systemd/user/rustdesk.service
 		mkdir -p /usr/lib/systemd/system/
-		cp /usr/share/rustdesk/files/systemd/subnetdesk.service /usr/lib/systemd/system/subnetdesk.service
+		cp /usr/share/subnetdesk/files/systemd/subnetdesk.service /usr/lib/systemd/system/subnetdesk.service
 		systemctl daemon-reload
 		systemctl enable subnetdesk
 		systemctl start subnetdesk

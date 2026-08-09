@@ -3706,7 +3706,7 @@ bool isInHomePage() {
 Widget buildVirtualWindowFrame(BuildContext context, Widget child) {
   boxShadow() => isMainDesktopWindow
       ? <BoxShadow>[
-          if (stateGlobal.fullscreen.isFalse || stateGlobal.isMaximized.isFalse)
+          if (stateGlobal.fullscreen.isFalse && stateGlobal.isMaximized.isFalse)
             BoxShadow(
               color: Colors.black.withOpacity(0.1),
               offset: Offset(
