@@ -45,6 +45,14 @@ void main() {
     expect(Peer.copy(peer).online, isTrue);
   });
 
+  test('LAN peer JSON preserves backend online state', () {
+    final onlinePeer = Peer.fromJson({'id': 'online', 'online': true});
+    final offlinePeer = Peer.fromJson({'id': 'offline', 'online': false});
+
+    expect(onlinePeer.online, isTrue);
+    expect(offlinePeer.online, isFalse);
+  });
+
   test('rest recent endpoints remain available without cloud status', () {
     final peers = mergeAutocompletePeers(restRecentPeerIds: ['host.lan:21118']);
 

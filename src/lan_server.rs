@@ -1,7 +1,10 @@
 use std::{
     net::{IpAddr, SocketAddr},
     str::FromStr,
-    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+    sync::{
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+        Mutex,
+    },
     time::Duration,
 };
 
@@ -21,16 +24,45 @@ use crate::server::{new as new_server, ServerPtr};
 static RESTART_GENERATION: AtomicU64 = AtomicU64::new(0);
 static ACTIVE_LISTENERS: AtomicUsize = AtomicUsize::new(0);
 
+pub const RUNTIME_STATE_STOPPED: &str = "stopped";
+pub const RUNTIME_STATE_STARTING: &str = "starting";
+pub const RUNTIME_STATE_LISTENING: &str = "listening";
+pub const RUNTIME_STATE_FAILED: &str = "failed";
+
+#[derive(Clone, Debug)]
+pub struct LanServerRuntimeStatus {
+    pub state: String,
+    pub last_error: String,
+}
+
+lazy_static::lazy_static! {
+    static ref RUNTIME_STATUS: Mutex<LanServerRuntimeStatus> = Mutex::new(LanServerRuntimeStatus {
+        state: RUNTIME_STATE_STARTING.to_owned(),
+        last_error: String::new(),
+    });
+}
+
+fn set_runtime_status(state: &str, last_error: String) {
+    let mut status = RUNTIME_STATUS.lock().unwrap();
+    status.state = state.to_owned();
+    status.last_error = last_error;
+}
+
 pub struct LanServer;
 
 impl LanServer {
     pub fn restart() {
         RESTART_GENERATION.fetch_add(1, Ordering::SeqCst);
+        set_runtime_status(RUNTIME_STATE_STARTING, String::new());
         log::info!("LAN server restart requested");
     }
 
     pub fn is_running() -> bool {
         ACTIVE_LISTENERS.load(Ordering::SeqCst) > 0
+    }
+
+    pub fn runtime_status() -> LanServerRuntimeStatus {
+        RUNTIME_STATUS.lock().unwrap().clone()
     }
 
     pub(crate) fn is_discoverable() -> bool {
@@ -45,6 +77,8 @@ impl LanServer {
             let generation = RESTART_GENERATION.load(Ordering::SeqCst);
             let signature = listener_signature();
             if !service_ready() {
+                ACTIVE_LISTENERS.store(0, Ordering::SeqCst);
+                set_runtime_status(RUNTIME_STATE_STOPPED, String::new());
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 continue;
             }
@@ -54,11 +88,14 @@ impl LanServer {
                     Ok(result) => result,
                     Err(err) => {
                         log::error!("Failed to start LAN server: {err}");
+                        ACTIVE_LISTENERS.store(0, Ordering::SeqCst);
+                        set_runtime_status(RUNTIME_STATE_FAILED, err.to_string());
                         tokio::time::sleep(Duration::from_secs(1)).await;
                         continue;
                     }
                 };
             ACTIVE_LISTENERS.store(native_listener_count, Ordering::SeqCst);
+            set_runtime_status(RUNTIME_STATE_LISTENING, String::new());
             loop {
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 if generation != RESTART_GENERATION.load(Ordering::SeqCst)
@@ -72,6 +109,14 @@ impl LanServer {
                 log::debug!("LAN listener stop receivers already closed");
             }
             ACTIVE_LISTENERS.store(0, Ordering::SeqCst);
+            set_runtime_status(
+                if service_ready() {
+                    RUNTIME_STATE_STARTING
+                } else {
+                    RUNTIME_STATE_STOPPED
+                },
+                String::new(),
+            );
             for handle in handles {
                 if let Err(err) = handle.await {
                     log::debug!("LAN listener task ended: {err}");
@@ -184,13 +229,18 @@ async fn bind_listeners(
     let addresses = listen_addresses();
     let mut listeners = Vec::new();
     if addresses.is_empty() {
-        listeners.push(listen_any(port).await?);
+        listeners.push(listen_any(port).await.map_err(|err| {
+            hbb_common::anyhow::anyhow!("Failed to listen on port {port}: {err}")
+        })?);
     } else {
         for address in addresses {
             let ip = IpAddr::from_str(&address).map_err(|_| {
                 hbb_common::anyhow::anyhow!("Invalid LAN listen address: {address}")
             })?;
-            listeners.push(new_listener(SocketAddr::new(ip, port), true).await?);
+            let endpoint = SocketAddr::new(ip, port);
+            listeners.push(new_listener(endpoint, true).await.map_err(|err| {
+                hbb_common::anyhow::anyhow!("Failed to listen on {endpoint}: {err}")
+            })?);
         }
     }
 

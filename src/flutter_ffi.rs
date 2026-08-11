@@ -43,13 +43,22 @@ mod lan_server_info_tests {
 
     #[test]
     fn reports_cached_background_listener_status() {
-        assert!(lan_server_running_for_ui(1));
+        assert!(lan_server_running_for_ui(
+            crate::lan_server::RUNTIME_STATE_LISTENING
+        ));
     }
 
     #[test]
-    fn non_positive_background_status_is_not_ready() {
-        assert!(!lan_server_running_for_ui(0));
-        assert!(!lan_server_running_for_ui(-1));
+    fn non_listening_background_status_is_not_ready() {
+        assert!(!lan_server_running_for_ui(
+            crate::lan_server::RUNTIME_STATE_STARTING
+        ));
+        assert!(!lan_server_running_for_ui(
+            crate::lan_server::RUNTIME_STATE_FAILED
+        ));
+        assert!(!lan_server_running_for_ui(
+            crate::lan_server::RUNTIME_STATE_STOPPED
+        ));
     }
 
     #[cfg(target_os = "macos")]
@@ -1168,7 +1177,10 @@ pub fn main_get_connect_status() -> String {
     .to_string()
 }
 
-pub fn main_check_connect_status() {}
+pub fn main_check_connect_status() {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    ui_interface::start_option_status_sync();
+}
 
 pub fn main_discover() {
     discover();
@@ -1675,9 +1687,13 @@ pub fn main_get_lan_server_info_sync() -> SyncReturn<String> {
 fn lan_server_info() -> String {
     let configured = Config::lan_credentials_configured();
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    let running = lan_server_running_for_ui(get_connect_status().status_num);
+    let (runtime_state, runtime_error) = get_lan_server_runtime_status();
     #[cfg(any(target_os = "android", target_os = "ios"))]
-    let running = crate::lan_server::LanServer::is_running();
+    let (runtime_state, runtime_error) = {
+        let status = crate::lan_server::LanServer::runtime_status();
+        (status.state, status.last_error)
+    };
+    let running = lan_server_running_for_ui(&runtime_state);
     #[cfg(not(target_os = "ios"))]
     let configured_listen_addresses: std::collections::HashSet<String> =
         Config::get_option("lan-listen-addresses")
@@ -1727,6 +1743,8 @@ fn lan_server_info() -> String {
     let data = serde_json::json!({
         "configured": configured,
         "running": running,
+        "runtime_state": runtime_state,
+        "runtime_error": runtime_error,
         "username": Config::get_lan_access_username(),
         "credential_revision": Config::get_credential_revision(),
         "device_name": crate::lan::device_display_name(),
@@ -1752,8 +1770,8 @@ fn lan_server_info() -> String {
     data.to_string()
 }
 
-fn lan_server_running_for_ui(status_num: i32) -> bool {
-    status_num > 0
+fn lan_server_running_for_ui(runtime_state: &str) -> bool {
+    runtime_state == crate::lan_server::RUNTIME_STATE_LISTENING
 }
 
 fn should_sync_lan_settings_to_background() -> bool {

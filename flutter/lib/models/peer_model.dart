@@ -29,7 +29,9 @@ class Peer {
         alias = json['alias'] ?? '',
         fingerprint = json['fingerprint'] ?? '',
         rdpPort = json['rdpPort'] ?? '',
-        rdpUsername = json['rdpUsername'] ?? '';
+        rdpUsername = json['rdpUsername'] ?? '' {
+    online = json['online'] == true;
+  }
 
   Map<String, dynamic> toJson() {
     return <String, dynamic>{
@@ -149,10 +151,11 @@ class Peers extends ChangeNotifier {
       restPeerIds = (evt['ids'] as String).split(',');
     }
 
-    for (var peer in peers) {
-      final state = onlineStates[peer.id];
-      peer.online =
-          loadEvent == 'load_lan_peers' || (state != null && state != false);
+    if (loadEvent != 'load_lan_peers') {
+      for (var peer in peers) {
+        final state = onlineStates[peer.id];
+        peer.online = state != null && state != false;
+      }
     }
     event = UpdateEvent.load;
     notifyListeners();

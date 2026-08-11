@@ -22,4 +22,15 @@ void main() {
       LanServerDisplayStatus.serviceStopped,
     );
   });
+
+  test('listener startup errors are reported as service failures', () {
+    expect(
+      lanServerDisplayStatus(
+        configured: true,
+        running: false,
+        startupError: 'Address already in use',
+      ),
+      LanServerDisplayStatus.serviceFailed,
+    );
+  });
 }

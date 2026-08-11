@@ -327,6 +327,7 @@ pub enum Data {
     SAS,
     UserSid(Option<u32>),
     OnlineStatus(Option<(i64, bool)>),
+    LanServerStatus(Option<(String, String)>),
     Config((String, Option<String>)),
     Options(Option<HashMap<String, String>>),
     RawMessage(Vec<u8>),
@@ -770,6 +771,17 @@ async fn handle(data: Data, stream: &mut Connection) {
                 -1
             };
             allow_err!(stream.send(&Data::OnlineStatus(Some((status, true)))).await);
+        }
+        Data::LanServerStatus(_) => {
+            let status = crate::lan_server::LanServer::runtime_status();
+            allow_err!(
+                stream
+                    .send(&Data::LanServerStatus(Some((
+                        status.state,
+                        status.last_error,
+                    ))))
+                    .await
+            );
         }
         #[cfg(feature = "flutter")]
         Data::VideoConnCount(None) => {

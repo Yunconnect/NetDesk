@@ -114,15 +114,20 @@ class _LanServerInfoPanelState extends State<LanServerInfoPanel> {
     final info = _info;
     final configured = info['configured'] == true;
     final running = info['running'] == true;
+    final runtimeError = info['runtime_error']?.toString() ?? '';
     final displayStatus = lanServerDisplayStatus(
       configured: configured,
       running: running,
+      startupError: runtimeError,
     );
     final statusLabel = switch (displayStatus) {
       LanServerDisplayStatus.authenticationRequired => translate(
         'Authentication Required',
       ),
       LanServerDisplayStatus.ready => translate('Ready'),
+      LanServerDisplayStatus.serviceFailed => translate(
+        'Service is not running',
+      ),
       LanServerDisplayStatus.serviceStopped => translate(
         'Service is not running',
       ),
@@ -181,9 +186,12 @@ class _LanServerInfoPanelState extends State<LanServerInfoPanel> {
     final fingerprint = info['fingerprint']?.toString() ?? '';
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final muted = isDark ? Colors.white54 : const Color(0xFF7A8290);
-    final statusColor = displayStatus == LanServerDisplayStatus.ready
-        ? const Color(0xFF27B980)
-        : const Color(0xFFF59E0B);
+    final statusColor = switch (displayStatus) {
+      LanServerDisplayStatus.ready => const Color(0xFF27B980),
+      LanServerDisplayStatus.serviceFailed =>
+        Theme.of(context).colorScheme.error,
+      _ => const Color(0xFFF59E0B),
+    };
     if (widget.compact) {
       return Card(
         color: isDark ? const Color(0xFF24262D) : Colors.white,
@@ -280,6 +288,21 @@ class _LanServerInfoPanelState extends State<LanServerInfoPanel> {
                   ),
                 ],
               ),
+              if (runtimeError.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    runtimeError,
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                      fontSize: 11,
+                    ),
+                  ),
+                ),
+              ],
               const SizedBox(height: 12),
               Divider(
                 height: 1,
@@ -379,9 +402,7 @@ class _LanServerInfoPanelState extends State<LanServerInfoPanel> {
                   height: 8,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    color: displayStatus == LanServerDisplayStatus.ready
-                        ? const Color(0xFF27B980)
-                        : Colors.orange,
+                    color: statusColor,
                   ),
                 ),
                 const SizedBox(width: 6),
@@ -409,6 +430,16 @@ class _LanServerInfoPanelState extends State<LanServerInfoPanel> {
                   ),
               ],
             ),
+            if (runtimeError.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              SelectableText(
+                runtimeError,
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.error,
+                  fontSize: 11,
+                ),
+              ),
+            ],
             const SizedBox(height: 14),
             Text(
               translate('Name'),
