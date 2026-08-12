@@ -21,6 +21,7 @@ cert.pfx
 *svg
 !res/subnetdesk-icon.svg
 *jpg
+!assets/community/wechat-contact.jpg
 sciter.dll
 **pdb
 src/bridge_generated.rs

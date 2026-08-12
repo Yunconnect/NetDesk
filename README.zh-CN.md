@@ -140,16 +140,20 @@ cd SubnetDesk
 
 欢迎提交缺陷报告、功能建议和 Pull Request。开始修改前建议先查看现有 [Issues](https://github.com/zibo-chen/SubnetDesk/issues)，并尽量让改动保持聚焦，符合项目面向局域网与 VPN 的产品定位。
 
-## ⭐ Star 趋势
+## 💬 交流社区
 
 <p align="center">
-  <a href="https://www.star-history.com/#zibo-chen/SubnetDesk&Date">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=zibo-chen/SubnetDesk&type=Date&theme=dark">
-      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=zibo-chen/SubnetDesk&type=Date">
-      <img alt="SubnetDesk Star 趋势图" src="https://api.star-history.com/svg?repos=zibo-chen/SubnetDesk&type=Date" width="680">
-    </picture>
+  <a href="https://discord.gg/MFZG478wPQ">
+    <img src="https://img.shields.io/badge/Discord-加入交流社区-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="加入 SubnetDesk Discord 交流社区">
   </a>
+</p>
+
+<p align="center">
+  欢迎加入 <a href="https://discord.gg/MFZG478wPQ">SubnetDesk Discord 交流社区</a>。也可以扫描下方二维码添加我的微信，备注 <strong>SubnetDesk</strong>，我会拉你进入微信交流群。
+</p>
+
+<p align="center">
+  <img src="assets/community/wechat-contact.jpg" alt="添加 czb 微信，加入 SubnetDesk 交流群" width="360">
 </p>
 
 ## 🙏 致谢与许可

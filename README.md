@@ -140,16 +140,20 @@ The build requires Rust, Flutter, and platform-specific native dependencies. The
 
 Bug reports, feature ideas, and pull requests are welcome. Before opening a change, check the existing [issues](https://github.com/zibo-chen/SubnetDesk/issues) and keep changes focused on the LAN/VPN-first product scope.
 
-## ⭐ Star history
+## 💬 Community
 
 <p align="center">
-  <a href="https://www.star-history.com/#zibo-chen/SubnetDesk&Date">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=zibo-chen/SubnetDesk&type=Date&theme=dark">
-      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=zibo-chen/SubnetDesk&type=Date">
-      <img alt="SubnetDesk star history chart" src="https://api.star-history.com/svg?repos=zibo-chen/SubnetDesk&type=Date" width="680">
-    </picture>
+  <a href="https://discord.gg/MFZG478wPQ">
+    <img src="https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join the SubnetDesk Discord community">
   </a>
+</p>
+
+<p align="center">
+  Join the <a href="https://discord.gg/MFZG478wPQ">SubnetDesk Discord community</a>, or scan the QR code below to add me on WeChat. Mention <strong>SubnetDesk</strong>, and I will invite you to the WeChat group.
+</p>
+
+<p align="center">
+  <img src="assets/community/wechat-contact.jpg" alt="Add czb on WeChat to join the SubnetDesk community group" width="360">
 </p>
 
 ## 🙏 Credits and license
