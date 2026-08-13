@@ -6,6 +6,7 @@ enum SetupReadinessIssue {
   screenRecording,
   accessibility,
   inputMonitoring,
+  localNetwork,
   daemon,
   selinux,
   wayland,
@@ -23,6 +24,7 @@ class SetupReadinessSnapshot {
     this.canScreenRecord = true,
     this.processTrusted = true,
     this.canMonitorInput = true,
+    this.localNetworkDenied = false,
     this.daemonInstalled = true,
     this.selinuxEnforcing = false,
     this.showSelinuxWarning = true,
@@ -39,6 +41,7 @@ class SetupReadinessSnapshot {
   final bool canScreenRecord;
   final bool processTrusted;
   final bool canMonitorInput;
+  final bool localNetworkDenied;
   final bool daemonInstalled;
   final bool selinuxEnforcing;
   final bool showSelinuxWarning;
@@ -70,6 +73,9 @@ List<SetupReadinessIssue> resolveSetupReadinessIssues(
       }
       if (!snapshot.canMonitorInput) {
         issues.add(SetupReadinessIssue.inputMonitoring);
+      }
+      if (snapshot.localNetworkDenied) {
+        issues.add(SetupReadinessIssue.localNetwork);
       }
       if (!snapshot.outgoingOnly &&
           !snapshot.serviceStopped &&
