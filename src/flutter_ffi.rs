@@ -66,6 +66,12 @@ mod lan_server_info_tests {
     fn macos_lan_settings_are_synchronized_to_the_background_host() {
         assert!(should_sync_lan_settings_to_background());
     }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_portable_lan_settings_are_synchronized_to_the_background_host() {
+        assert!(should_sync_lan_settings_to_background());
+    }
 }
 
 fn initialize(app_dir: &str, custom_client_config: &str) {
@@ -1781,7 +1787,10 @@ fn should_sync_lan_settings_to_background() -> bool {
     }
     #[cfg(target_os = "windows")]
     {
-        crate::platform::is_self_service_running()
+        // Portable builds run the background host as a user process instead of
+        // an SCM service. It still owns an independent in-memory Config snapshot,
+        // so LAN credentials and listener options must always be synchronized.
+        true
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
