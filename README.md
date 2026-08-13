@@ -2,7 +2,7 @@
   <img src="res/subnetdesk-icon.svg" alt="SubnetDesk logo" width="120">
 </p>
 
-<h1 align="center">SubnetDesk</h1>
+# SubnetDesk
 
 <p align="center">
   <strong>A LAN-first remote desktop for fast, private, direct connections.</strong>
