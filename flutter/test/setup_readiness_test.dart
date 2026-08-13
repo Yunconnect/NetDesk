@@ -11,6 +11,7 @@ void main() {
           canScreenRecord: false,
           processTrusted: false,
           canMonitorInput: false,
+          localNetworkDenied: true,
           daemonInstalled: false,
         ),
       );
@@ -21,6 +22,7 @@ void main() {
           SetupReadinessIssue.screenRecording,
           SetupReadinessIssue.accessibility,
           SetupReadinessIssue.inputMonitoring,
+          SetupReadinessIssue.localNetwork,
           SetupReadinessIssue.daemon,
         ],
       );
@@ -40,6 +42,18 @@ void main() {
       );
 
       expect(issues, const [SetupReadinessIssue.inputMonitoring]);
+    });
+
+    test('denied local-network access is reported for outgoing-only mode', () {
+      final issues = resolveSetupReadinessIssues(
+        const SetupReadinessSnapshot(
+          platform: SetupReadinessPlatform.macos,
+          outgoingOnly: true,
+          localNetworkDenied: true,
+        ),
+      );
+
+      expect(issues, const [SetupReadinessIssue.localNetwork]);
     });
 
     test('explicitly stopped service does not request daemon installation', () {

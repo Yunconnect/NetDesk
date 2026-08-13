@@ -5,6 +5,8 @@ import 'package:flutter_hbb/common.dart';
 
 enum SystemWindowTheme { light, dark }
 
+enum LocalNetworkPermissionStatus { authorized, denied, checking, unknown }
+
 /// The platform channel for RustDesk.
 class RdPlatformChannel {
   RdPlatformChannel._();
@@ -41,5 +43,24 @@ class RdPlatformChannel {
   Future<void> terminate() {
     assert(isMacOS);
     return _hostMethodChannel.invokeMethod("terminate");
+  }
+
+  Future<LocalNetworkPermissionStatus> checkLocalNetworkPermission() async {
+    assert(isMacOS);
+    final status = await _hostMethodChannel.invokeMethod<String>(
+      "checkLocalNetworkPermission",
+    );
+    return LocalNetworkPermissionStatus.values.firstWhere(
+      (value) => value.name == status,
+      orElse: () => LocalNetworkPermissionStatus.unknown,
+    );
+  }
+
+  Future<bool> openLocalNetworkSettings() async {
+    assert(isMacOS);
+    return await _hostMethodChannel.invokeMethod<bool>(
+          "openLocalNetworkSettings",
+        ) ??
+        false;
   }
 }

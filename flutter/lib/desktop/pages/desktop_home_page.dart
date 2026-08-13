@@ -1429,6 +1429,9 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   var watchIsCanRecordAudio = false;
   Timer? _updateTimer;
   bool isCardClosed = false;
+  LocalNetworkPermissionStatus _localNetworkPermission =
+      LocalNetworkPermissionStatus.unknown;
+  bool _checkingLocalNetworkPermission = false;
   PeerTabIndex _selectedPeerTab = PeerTabIndex.lan;
   String? _selectedFavoriteGroupId;
 
@@ -1637,6 +1640,9 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         canScreenRecord: !isMac || bind.mainIsCanScreenRecording(prompt: false),
         processTrusted: !isMac || bind.mainIsProcessTrusted(prompt: false),
         canMonitorInput: !isMac || bind.mainIsCanInputMonitoring(prompt: false),
+        localNetworkDenied:
+            isMac &&
+            _localNetworkPermission == LocalNetworkPermissionStatus.denied,
         daemonInstalled: !isMac || bind.mainIsInstalledDaemon(prompt: false),
         selinuxEnforcing: isLinuxPlatform && bind.isSelinuxEnforcing(),
         showSelinuxWarning:
@@ -1657,6 +1663,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       case SetupReadinessIssue.screenRecording:
       case SetupReadinessIssue.accessibility:
       case SetupReadinessIssue.inputMonitoring:
+      case SetupReadinessIssue.localNetwork:
         return translate('Permissions');
       case SetupReadinessIssue.daemon:
         return translate('Service');
@@ -1679,6 +1686,9 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         return translate('config_acc');
       case SetupReadinessIssue.inputMonitoring:
         return translate('config_input');
+      case SetupReadinessIssue.localNetwork:
+        return '${translate('Open System Setting')}: '
+            '${translate('Network')} · ${translate('Enable LAN discovery')}';
       case SetupReadinessIssue.daemon:
         return translate('install_daemon_tip');
       case SetupReadinessIssue.selinux:
@@ -1702,6 +1712,8 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         return Icons.accessibility_new_rounded;
       case SetupReadinessIssue.inputMonitoring:
         return Icons.keyboard_alt_outlined;
+      case SetupReadinessIssue.localNetwork:
+        return Icons.lan_outlined;
       case SetupReadinessIssue.daemon:
         return Icons.settings_suggest_outlined;
       case SetupReadinessIssue.selinux:
@@ -1717,6 +1729,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       case SetupReadinessIssue.screenRecording:
       case SetupReadinessIssue.accessibility:
       case SetupReadinessIssue.inputMonitoring:
+      case SetupReadinessIssue.localNetwork:
       case SetupReadinessIssue.daemon:
       case SetupReadinessIssue.selinux:
       case SetupReadinessIssue.wayland:
@@ -1735,6 +1748,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       case SetupReadinessIssue.screenRecording:
       case SetupReadinessIssue.accessibility:
       case SetupReadinessIssue.inputMonitoring:
+      case SetupReadinessIssue.localNetwork:
         return translate('Configure');
       case SetupReadinessIssue.selinux:
       case SetupReadinessIssue.wayland:
@@ -1758,6 +1772,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       case SetupReadinessIssue.screenRecording:
       case SetupReadinessIssue.accessibility:
       case SetupReadinessIssue.inputMonitoring:
+      case SetupReadinessIssue.localNetwork:
       case SetupReadinessIssue.daemon:
         return null;
     }
@@ -1786,6 +1801,9 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       case SetupReadinessIssue.inputMonitoring:
         bind.mainIsCanInputMonitoring(prompt: true);
         watchIsInputMonitoring = true;
+        break;
+      case SetupReadinessIssue.localNetwork:
+        await RdPlatformChannel.instance.openLocalNetworkSettings();
         break;
       case SetupReadinessIssue.daemon:
         bind.mainIsInstalledDaemon(prompt: true);
@@ -2858,6 +2876,11 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   void initState() {
     super.initState();
     favoriteGroupModel.load();
+    if (isMacOS) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _checkLocalNetworkPermission();
+      });
+    }
     _updateTimer = periodic_immediate(const Duration(seconds: 1), () async {
       final error = await bind.mainGetError();
       if (systemError != error) {
@@ -3063,6 +3086,25 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     super.didChangeAppLifecycleState(state);
     if (state == AppLifecycleState.resumed) {
       shouldBeBlocked(_block, canBeBlocked);
+      if (isMacOS) {
+        _checkLocalNetworkPermission();
+      }
+    }
+  }
+
+  Future<void> _checkLocalNetworkPermission() async {
+    if (_checkingLocalNetworkPermission) return;
+    _checkingLocalNetworkPermission = true;
+    try {
+      final status = await RdPlatformChannel.instance
+          .checkLocalNetworkPermission();
+      if (mounted && status != LocalNetworkPermissionStatus.checking) {
+        setState(() => _localNetworkPermission = status);
+      }
+    } on PlatformException catch (error) {
+      debugPrint('Failed to check local-network permission: $error');
+    } finally {
+      _checkingLocalNetworkPermission = false;
     }
   }
 

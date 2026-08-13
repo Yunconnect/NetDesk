@@ -43,6 +43,12 @@
 	<string>MainMenu</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Record the sound from microphone for the purpose of the remote desktop.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>SubnetDesk uses your local network to discover and connect to nearby devices for remote access.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_subnetdesk._tcp</string>
+	</array>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
     <key>LSUIElement</key>
