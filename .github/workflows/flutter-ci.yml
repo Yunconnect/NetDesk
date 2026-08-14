@@ -1,12 +1,7 @@
-name: SubnetDesk Installers CI
+name: NetDesk 最新版编译
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths-ignore:
-    - "docs/**"
-    - "README.md"
-    - ".github/workflows/ci.yml"
 
 concurrency:
   group: subnetdesk-flutter-ci-${{ github.ref }}
